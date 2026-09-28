@@ -1,0 +1,17 @@
+[agents]
+default_agent = "assistant"
+enabled = true
+
+[agents.rubber_duck]
+external_agent_id = "gravity"
+mode = "manual"
+
+[agents.servers.gravity]
+args = ["--uid="]
+command = "/home/pastel/.local/share/ee/agents/antigravity-acp/1.2.1/66c9edac06cf27b1cad6ee7afe46a08152aae449e5e1d82e0ceb670fa76bdddc/agy_acp_server.par"
+
+[agents.servers.assistant]
+command = "ee-openrouter-agent"
+args = ["--model", "deepseek/deepseek-v4-flash-0731"]
+env = { OPENROUTER_MAX_ITERATIONS = "128" }
+

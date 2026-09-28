@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/frameiru-core",
+    "crates/frameiru-capture",
+    "crates/frameiru-segment",
+    "crates/frameiru-compose",
+    "crates/frameiru-sink",
+    "crates/frameiru-ipc",
+    "crates/frameiru-pipeline",
+    "crates/frameiru-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Edward Fitz Abucay <29743013+ffimnsr@users.noreply.github.com>"]
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# Internal workspace crates
+frameiru-core = { path = "crates/frameiru-core" }
+frameiru-capture = { path = "crates/frameiru-capture" }
+frameiru-segment = { path = "crates/frameiru-segment" }
+frameiru-compose = { path = "crates/frameiru-compose" }
+frameiru-sink = { path = "crates/frameiru-sink" }
+frameiru-ipc = { path = "crates/frameiru-ipc" }
+frameiru-pipeline = { path = "crates/frameiru-pipeline" }
+
+# Common async & error handling
+tokio = { version = "1.43", features = ["full"] }
+thiserror = "2.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+bytemuck = { version = "1.21", features = ["derive"] }
+crossbeam-channel = "0.5"
+arc-swap = "1.7"
+parking_lot = "0.12"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
