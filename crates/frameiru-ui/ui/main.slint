@@ -1,0 +1,98 @@
+import { Button, ComboBox, HorizontalBox, Slider, VerticalBox } from "std-widgets.slint";
+
+export component MainWindow inherits Window {
+    title: "Frameiru";
+    preferred-width: 960px;
+    preferred-height: 680px;
+
+    // Preview frame (RGB8 converted by the app) and status line.
+    in-out property <image> preview;
+    in-out property <string> status_text: "stopped";
+    // Camera selector; item 0 is always the synthetic mock source.
+    in-out property <[string]> devices: ["(mock)"];
+    in-out property <int> selected_device: 0;
+    // Background controls.
+    in-out property <float> blur_radius: 8;
+    in-out property <string> model_name: "none";
+
+    callback start_pipeline();
+    callback stop_pipeline();
+    callback device_selected(string);
+    callback set_passthrough();
+    callback set_blur(float);
+    callback set_color(string);
+    callback pick_image();
+
+    VerticalBox {
+        HorizontalBox {
+            Text { text: "Frameiru"; font-size: 22px; font-weight: 700; }
+            Text { text: status_text; }
+        }
+
+        HorizontalBox {
+            Image {
+                source: preview;
+                width: 640px;
+                height: 480px;
+            }
+        }
+
+        HorizontalBox {
+            ComboBox {
+                model: devices;
+                current-index: selected_device;
+                selected(v) => {
+                    device_selected(v);
+                }
+            }
+            Button {
+                text: "Start";
+                clicked => { start_pipeline(); }
+            }
+            Button {
+                text: "Stop";
+                clicked => { stop_pipeline(); }
+            }
+        }
+
+        HorizontalBox {
+            Button {
+                text: "Passthrough";
+                clicked => { set_passthrough(); }
+            }
+            Button {
+                text: "Blur";
+                clicked => { set_blur(blur_radius); }
+            }
+            Slider {
+                minimum: 1;
+                maximum: 30;
+                value: blur_radius;
+                changed(v) => { blur_radius = v; }
+            }
+            Button {
+                text: "Image...";
+                clicked => { pick_image(); }
+            }
+        }
+
+        HorizontalBox {
+            Button {
+                text: "Red";
+                clicked => { set_color("#e53935"); }
+            }
+            Button {
+                text: "Green";
+                clicked => { set_color("#43a047"); }
+            }
+            Button {
+                text: "Blue";
+                clicked => { set_color("#1e88e5"); }
+            }
+        }
+
+        HorizontalBox {
+            Text { text: "model: " + model_name; }
+        }
+    }
+}

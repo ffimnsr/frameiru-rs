@@ -480,16 +480,16 @@ Commands:
   - [x] Standalone daemon management.
 
 ### Phase 8: Slint GUI Application (`frameiru-ui`)
-- [ ] Implement `main.slint`:
-  - Live video preview widget (`Image` component).
-  - Sliders for blur radius, buttons for background selection, device selector dropdown.
-- [ ] Implement `frameiru-ui/src/app.rs`:
-  - Connect Slint event handlers to `PipelineHandle`.
-  - Stream preview frames into `slint::SharedPixelBuffer` and update UI image on event loop.
-  - Support headless preview mode without loopback module.
+- [x] Implement `main.slint`:
+  - [x] Live video preview widget (`Image` component).
+  - [x] Sliders for blur radius, buttons for background selection, device selector dropdown.
+- [x] Implement `frameiru-ui/src/app.rs`:
+  - [x] Connect Slint event handlers to `PipelineHandle`.
+  - [x] Stream preview frames into `slint::SharedPixelBuffer` and update UI image on event loop.
+  - [x] Support headless preview mode without loopback module.
 
 ### Phase 9: Verification, Hardening & Benchmarks
-- [ ] Quiet test suite (`cargo test --quiet`).
-- [ ] Clippy checks with zero warnings.
-- [ ] Flaky test protection: isolated synthetic sources and mocked sinks, no global shared state.
-- [ ] End-to-end verification with virtual camera and browser / video consumer.
+- [x] Quiet test suite (`cargo test --quiet`).
+- [x] Clippy checks with zero warnings.
+- [x] Flaky test protection: isolated synthetic sources and mocked sinks, no global shared state.
+- [x] End-to-end verification with virtual camera and browser / video consumer.

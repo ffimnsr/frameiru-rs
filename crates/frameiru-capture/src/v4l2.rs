@@ -41,8 +41,6 @@ pub struct V4l2Source {
     resolution: Resolution,
     fourcc: FourCC,
     sequence: u64,
-    /// Monotonic base for driver-timestamp -> epoch conversion.
-    mono_base: std::time::Instant,
     /// Reused decode scratch buffer: one allocation for the source's life.
     scratch: Vec<u8>,
 }
@@ -122,7 +120,6 @@ impl V4l2Source {
             resolution,
             fourcc: actual.fourcc,
             sequence: 0,
-            mono_base: std::time::Instant::now(),
             scratch,
         })
     }
@@ -174,14 +171,11 @@ impl FrameSource for V4l2Source {
 
         let sequence = self.sequence;
         self.sequence += 1;
-        // The driver stamps CLOCK_MONOTONIC; shift it onto the epoch clock
-        // so the pipeline's latency metric is comparable with the compose
-        // thread's wall clock.
-        let driver_us =
-            meta.timestamp.sec.max(0) as u64 * 1_000_000 + meta.timestamp.usec.max(0) as u64;
-        let epoch_now = frameiru_core::timestamp_us_now();
-        let mono_now = self.mono_base.elapsed().as_micros() as u64;
-        let timestamp_us = epoch_now.saturating_sub(mono_now).saturating_add(driver_us);
+        // Stamp wall time at dequeue (same clock as the pipeline's compose
+        // side), so the latency metric is meaningful. Driver timestamps are
+        // monotonic-since-boot and cannot be compared to wall time without
+        // a shared boot-mapping, so they are not used here.
+        let timestamp_us = frameiru_core::timestamp_us_now();
 
         Ok(FrameBuffer {
             metadata: FrameMetadata {

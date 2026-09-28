@@ -51,6 +51,7 @@ mod tests {
                 capture_fps: 10.0,
                 composite_fps: 9.0,
                 frames_composited: 7,
+                masks_computed: 7,
                 latency_us: 3,
                 background: self.background.lock().unwrap().clone(),
             }
@@ -80,6 +81,19 @@ mod tests {
         })
     }
 
+    /// Waits for the server thread to bind `path` (bounded retry, no fixed
+    /// sleep — the accept loop polls every 50ms so this is quick).
+    fn wait_for_server(path: &std::path::Path) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if path.exists() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("server did not bind {} in time", path.display());
+    }
+
     #[test]
     fn set_background_and_get_status_roundtrip() {
         let path = socket_path();
@@ -88,7 +102,7 @@ mod tests {
             stopped: AtomicBool::new(false),
         });
         let thread = server_thread(path.clone(), Arc::clone(&control) as Arc<dyn Control>);
-        std::thread::sleep(Duration::from_millis(50)); // let it bind
+        wait_for_server(&path);
 
         let client = IpcClient::connect(&path).unwrap();
         client
@@ -115,7 +129,7 @@ mod tests {
             stopped: AtomicBool::new(false),
         });
         let thread = server_thread(path.clone(), Arc::clone(&control) as Arc<dyn Control>);
-        std::thread::sleep(Duration::from_millis(50));
+        wait_for_server(&path);
 
         let client = IpcClient::connect(&path).unwrap();
         let resp = client.request(&IpcRequest::GetStatus).unwrap();

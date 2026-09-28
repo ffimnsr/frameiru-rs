@@ -41,7 +41,7 @@ impl Engine {
         config.validate()?;
 
         let (capture_tx, capture_rx) = bounded::<FrameBuffer>(config.channel_capacity);
-        let (compose_tx, compose_rx) = bounded::<FrameBuffer>(config.channel_capacity);
+        let (infer_tx, infer_rx) = bounded::<FrameBuffer>(1);
         let (mode_tx, mode_rx) = bounded::<BackgroundMode>(1);
         let (preview_tx, _) = broadcast::channel::<Arc<FrameBuffer>>(config.preview_capacity);
         let stop = Arc::new(AtomicBool::new(false));
@@ -58,8 +58,8 @@ impl Engine {
             mode_rx,
             capture_tx,
             capture_rx,
-            compose_tx,
-            compose_rx,
+            infer_tx,
+            infer_rx,
         });
 
         let handle = PipelineHandle {
@@ -74,23 +74,20 @@ impl Engine {
         let mut threads = handle.inner.threads.lock().expect("threads mutex poisoned");
         threads.push(spawn_capture(Arc::clone(&shared), source));
 
-        // Route frames: inference thread in the middle when a segmenter is
-        // present; otherwise the capture channel feeds the composer direct.
-        let compose_input = if let Some(segmenter) = segmenter {
+        // Inference is optional and fully decoupled: it samples frames from
+        // the capture stream into the mask slot without gating the video.
+        if let Some(segmenter) = segmenter {
             threads.push(spawn_inference(
                 Arc::clone(&shared),
                 segmenter,
-                shared.capture_rx.clone(),
+                shared.infer_rx.clone(),
             ));
-            shared.compose_rx.clone()
-        } else {
-            shared.capture_rx.clone()
-        };
+        }
         threads.push(spawn_compose(
             Arc::clone(&shared),
             compositor,
             sink,
-            compose_input,
+            shared.capture_rx.clone(),
         ));
         drop(threads);
 
@@ -188,6 +185,7 @@ impl frameiru_ipc::Control for PipelineHandle {
             capture_fps: m.capture_fps,
             composite_fps: m.composite_fps,
             frames_composited: m.frames_composited,
+            masks_computed: m.masks_computed,
             latency_us: m.latency_us,
             background: self.current_background(),
         }

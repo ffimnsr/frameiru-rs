@@ -49,6 +49,11 @@ impl OnnxConfig {
 pub struct OnnxSegmenter {
     session: Session,
     config: OnnxConfig,
+    /// Resolved tensor names: configured value when present in the graph,
+    /// otherwise the graph's first input/output (models such as u2net name
+    /// their output "d1").
+    input_name: String,
+    output_name: String,
 }
 
 impl OnnxSegmenter {
@@ -56,13 +61,39 @@ impl OnnxSegmenter {
     pub fn load(path: impl AsRef<Path>, config: OnnxConfig) -> Result<Self, FrameiruError> {
         let mut builder = Session::builder()
             .map_err(|e| FrameiruError::Segmentation(format!("ort init failed: {e}")))?;
+        builder = builder
+            .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)
+            .map_err(|e| FrameiruError::Segmentation(format!("optimization setup failed: {e}")))?;
         let session = builder.commit_from_file(path.as_ref()).map_err(|e| {
             FrameiruError::Segmentation(format!(
                 "failed to load model {}: {e}",
                 path.as_ref().display()
             ))
         })?;
-        Ok(Self { session, config })
+        let resolve =
+            |configured: &str, graph: &[ort::value::Outlet]| -> Result<String, FrameiruError> {
+                graph
+                    .iter()
+                    .find(|o| o.name() == configured)
+                    .or_else(|| graph.first())
+                    .map(|o| o.name().to_string())
+                    .ok_or_else(|| {
+                        FrameiruError::Segmentation(format!(
+                            "model has no tensors (input/output) named '{configured}', "
+                        ))
+                    })
+            };
+        let input_name = resolve(&config.input_name, session.inputs())?;
+        let output_name = resolve(&config.output_name, session.outputs())?;
+        if input_name != config.input_name || output_name != config.output_name {
+            tracing::info!("model tensors resolved: input '{input_name}', output '{output_name}'");
+        }
+        Ok(Self {
+            session,
+            config,
+            input_name,
+            output_name,
+        })
     }
 
     pub fn config(&self) -> &OnnxConfig {
@@ -99,19 +130,14 @@ impl Segmenter for OnnxSegmenter {
 
         let input = Tensor::<f32>::from_array(([1usize, 3, ih, iw], tensor))
             .map_err(|e| FrameiruError::Segmentation(format!("tensor build failed: {e}")))?;
-        let input_name = self.config.input_name.clone();
+        let input_name = self.input_name.clone();
         let outputs = self
             .session
             .run(ort::inputs! { input_name => input })
             .map_err(|e| FrameiruError::Segmentation(format!("inference failed: {e}")))?;
-        let output = outputs
-            .get(self.config.output_name.as_str())
-            .ok_or_else(|| {
-                FrameiruError::Segmentation(format!(
-                    "model has no output named '{}'",
-                    self.config.output_name
-                ))
-            })?;
+        let output = outputs.get(self.output_name.as_str()).ok_or_else(|| {
+            FrameiruError::Segmentation(format!("model has no output named '{}'", self.output_name))
+        })?;
         let tensor_ref = output
             .downcast_ref::<TensorValueType<f32>>()
             .map_err(|e| FrameiruError::Segmentation(format!("output is not f32: {e}")))?;

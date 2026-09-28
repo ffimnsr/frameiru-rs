@@ -9,6 +9,7 @@ members = [
     "crates/frameiru-ipc",
     "crates/frameiru-pipeline",
     "crates/frameiru-cli",
+    "crates/frameiru-ui",
 ]
 
 [workspace.package]

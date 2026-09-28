@@ -722,24 +722,27 @@ mod tests {
         gpu.composite(&gray, &m, &mut out).unwrap();
         assert!(out.data.iter().all(|&v| v == 77));
 
-        // Blur mode: half-white/half-black source, mask 0 -> blended ramp.
-        gpu.update_background(BackgroundMode::Blur { radius: 4.0 })
+        // Blur mode: top half white, bottom half black, mask 0. Vertical
+        // asymmetry catches any NDC y-flip in the rendering path.
+        gpu.update_background(BackgroundMode::Blur { radius: 1.0 })
             .unwrap();
-        // Left half white, right half black, for every row.
+        // Top half white, bottom half black, for every column.
         let mut src2 = frame(res(32, 24), 0);
-        for row in 0..24usize {
-            for x in 0..16usize {
-                let i = (row * 32 + x) * 3;
+        for y in 0..12usize {
+            for x in 0..32usize {
+                let i = (y * 32 + x) * 3;
                 src2.data[i] = 255;
                 src2.data[i + 1] = 255;
                 src2.data[i + 2] = 255;
             }
         }
         gpu.composite(&src2, &m, &mut out).unwrap();
-        let mid = out.data[32 / 2 * 3];
+        // Radius 1 keeps the extremes: no vertical flip allowed.
+        let top = out.data[0];
+        let bottom = out.data[(23 * 32) * 3];
         assert!(
-            (100..=220).contains(&mid),
-            "blur midpoint should be a blend, got {mid}"
+            top > 128 && bottom < 128,
+            "vertical orientation broken: top={top} bottom={bottom}"
         );
     }
 }

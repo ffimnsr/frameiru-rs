@@ -1,0 +1,33 @@
+[package]
+name = "frameiru-ui"
+description = "Slint desktop GUI for frameiru"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[features]
+default = ["gpu", "v4l2"]
+# GPU compositor via wgpu (falls back to CPU automatically).
+gpu = ["frameiru-compose/gpu"]
+# Real camera + loopback support; without it the GUI runs on the mock
+# source with a null sink (headless preview mode).
+v4l2 = ["frameiru-capture/v4l2", "frameiru-sink/v4l2"]
+# ONNX background segmentation (model path passed on the command line).
+onnx = ["frameiru-segment/onnx"]
+
+[dependencies]
+frameiru-core = { workspace = true, features = ["slint"] }
+frameiru-capture = { workspace = true }
+frameiru-compose = { workspace = true }
+frameiru-pipeline = { workspace = true }
+frameiru-segment = { workspace = true }
+frameiru-sink = { workspace = true }
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive"] }
+slint = { version = "1", features = ["backend-winit", "renderer-femtovg"] }
+rfd = "0.15"
+tokio.workspace = true
+
+[build-dependencies]
+slint-build = "1"

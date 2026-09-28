@@ -48,6 +48,10 @@ pub struct RunArgs {
     /// ONNX model path; enables background segmentation.
     #[arg(long)]
     pub model: Option<PathBuf>,
+    /// ONNX model input canvas (WxH). Must match the graph: 320x320 for
+    /// u2net/silueta, 1024x1024 for isnet/BiRefNet/rmbg-2.0.
+    #[arg(long, default_value = "320x320")]
+    pub input_size: String,
     /// Capture width.
     #[arg(long, default_value_t = 640)]
     pub width: u32,

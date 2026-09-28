@@ -18,6 +18,9 @@ pub struct BenchArgs {
     /// ONNX model path; benchmark segmentation when set.
     #[arg(long)]
     pub model: Option<std::path::PathBuf>,
+    /// ONNX model input canvas (WxH); must match the graph.
+    #[arg(long, default_value = "320x320")]
+    pub input_size: String,
     /// Background used for compositing.
     #[arg(long, default_value = "color:0,120,0")]
     pub background: String,
@@ -32,7 +35,8 @@ pub fn benchmark(args: BenchArgs) -> anyhow::Result<()> {
         Some(path) => {
             #[cfg(feature = "onnx")]
             {
-                let config = frameiru_segment::OnnxConfig::new(resolution)?;
+                let input_size = super::parse_resolution(&args.input_size)?;
+                let config = frameiru_segment::OnnxConfig::new(input_size)?;
                 Some(Box::new(frameiru_segment::OnnxSegmenter::load(
                     path, config,
                 )?))
@@ -96,6 +100,12 @@ pub fn benchmark(args: BenchArgs) -> anyhow::Result<()> {
         elapsed.as_secs_f64()
     );
     println!("capture fps : {:.1} (rolling)", metrics.capture_fps);
+    println!(
+        "masks       : {} computed in {:.2}s ({:.2} masks/s)",
+        metrics.masks_computed,
+        elapsed.as_secs_f64(),
+        metrics.masks_computed as f64 / elapsed.as_secs_f64()
+    );
     println!("latency     : {} us (last frame)", metrics.latency_us);
     println!("mask errors : {}", metrics.mask_errors);
     Ok(())

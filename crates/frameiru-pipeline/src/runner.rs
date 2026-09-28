@@ -31,13 +31,14 @@ pub(crate) struct PipelineShared {
     pub background: ArcSwap<BackgroundMode>,
     /// Resolution of the last composited frame (for status queries).
     pub last_resolution: ArcSwap<Resolution>,
-    /// Capture -> inference channel (or directly to compose without a
-    /// segmenter). Saturation drops the newest frame.
+    /// Capture -> compose channel. Saturation drops the newest frame.
     pub capture_tx: crossbeam_channel::Sender<FrameBuffer>,
     pub capture_rx: crossbeam_channel::Receiver<FrameBuffer>,
-    /// Inference -> compose channel (unused without a segmenter).
-    pub compose_tx: crossbeam_channel::Sender<FrameBuffer>,
-    pub compose_rx: crossbeam_channel::Receiver<FrameBuffer>,
+    /// Capture -> inference channel (unused without a segmenter). Inference
+    /// is decoupled: it consumes frames at its own pace and only updates the
+    /// mask slot, so a slow model never throttles the video.
+    pub infer_tx: crossbeam_channel::Sender<FrameBuffer>,
+    pub infer_rx: crossbeam_channel::Receiver<FrameBuffer>,
 }
 
 /// Spawns the capture worker. Frames that do not fit the channel are dropped
@@ -55,11 +56,15 @@ pub(crate) fn spawn_capture(
                     Ok(frame) => {
                         warned = false;
                         shared.metrics.on_capture();
-                        match shared.capture_tx.try_send(frame) {
+                        // The compose channel gates the video; inference (if
+                        // present) gets a clone and runs at its own pace. A
+                        // full infer channel just skips a mask sample.
+                        match shared.capture_tx.try_send(frame.clone()) {
                             Ok(()) => {}
                             Err(TrySendError::Full(_)) => shared.metrics.on_drop(),
                             Err(TrySendError::Disconnected(_)) => break,
                         }
+                        let _ = shared.infer_tx.try_send(frame);
                     }
                     Err(e) => {
                         if !warned {
@@ -82,8 +87,8 @@ pub(crate) fn spawn_capture(
 }
 
 /// Spawns the inference worker (only when a segmenter is configured): each
-/// frame is segmented into the dynamic mask slot and forwarded to the
-/// compose channel. A failed segmentation keeps the previous mask.
+/// frame updates the dynamic mask slot. A failed segmentation keeps the
+/// previous mask. Never blocks the video path.
 pub(crate) fn spawn_inference(
     shared: Arc<PipelineShared>,
     segmenter: Box<dyn Segmenter>,
@@ -95,18 +100,16 @@ pub(crate) fn spawn_inference(
             let mut segmenter = segmenter;
             while !shared.stop.load(Ordering::Relaxed) {
                 match input_rx.recv_timeout(STOP_POLL) {
-                    Ok(frame) => {
-                        match segmenter.segment(&frame) {
-                            Ok(mask) => shared.mask_slot.store(Arc::new(mask)),
-                            Err(e) => {
-                                shared.metrics.on_mask_error();
-                                tracing::warn!("segmentation error (keeping previous mask): {e}");
-                            }
+                    Ok(frame) => match segmenter.segment(&frame) {
+                        Ok(mask) => {
+                            shared.mask_slot.store(Arc::new(mask));
+                            shared.metrics.on_mask_computed();
                         }
-                        if let Err(TrySendError::Full(_)) = shared.compose_tx.try_send(frame) {
-                            shared.metrics.on_drop();
+                        Err(e) => {
+                            shared.metrics.on_mask_error();
+                            tracing::warn!("segmentation error (keeping previous mask): {e}");
                         }
-                    }
+                    },
                     Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
                     Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
                 }

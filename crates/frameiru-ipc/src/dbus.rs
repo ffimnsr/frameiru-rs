@@ -91,6 +91,7 @@ mod tests {
                 capture_fps: 0.0,
                 composite_fps: 0.0,
                 frames_composited: 0,
+                masks_computed: 0,
                 latency_us: 0,
                 background: frameiru_core::BackgroundMode::Passthrough,
             }

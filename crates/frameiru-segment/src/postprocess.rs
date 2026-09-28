@@ -201,4 +201,25 @@ mod tests {
         let mut out = Mask::default();
         assert!(postprocess_mask(&model, res(4, 4), &lb, &mut out).is_err());
     }
+
+    /// Top-heavy mask must stay top-heavy through the unletterbox/upsample
+    /// path: a flip here would make the compositor blur the wrong half.
+    #[test]
+    fn postprocess_preserves_vertical_orientation() {
+        // Source 4x2 -> target 4x4: scale 1, inner 4x2 at pad_y = 1. The
+        // model canvas holds [bg, fg, bg, bg] top-to-bottom; the inner
+        // region (mask rows 1..2) must land on frame rows 0..1 in order.
+        let lb = Letterbox::compute(res(4, 2), res(4, 4)).unwrap();
+        assert_eq!(lb.inner, res(4, 2));
+        let model = Mask {
+            resolution: res(4, 4),
+            data: vec![
+                0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+        };
+        let mut out = Mask::default();
+        postprocess_mask(&model, res(4, 2), &lb, &mut out).unwrap();
+        assert_eq!(&out.data[..4], &[1.0; 4], "frame top = mask mid row");
+        assert_eq!(&out.data[4..], &[0.0; 4], "frame bottom = mask lower row");
+    }
 }

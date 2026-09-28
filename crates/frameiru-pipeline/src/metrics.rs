@@ -13,6 +13,8 @@ pub struct MetricsSnapshot {
     pub frames_composited: u64,
     /// Frames dropped due to channel saturation (newest dropped).
     pub frames_dropped: u64,
+    /// Successful mask computations (the async inference rate).
+    pub masks_computed: u64,
     /// Failed segmentation calls (previous mask reused).
     pub mask_errors: u64,
     /// Capture-to-composite latency of the last frame, microseconds.
@@ -30,6 +32,7 @@ pub struct Metrics {
     composited: AtomicU64,
     dropped: AtomicU64,
     mask_errors: AtomicU64,
+    masks_computed: AtomicU64,
     latency_us: AtomicU64,
     capture_fps: FpsMeter,
     composite_fps: FpsMeter,
@@ -48,6 +51,7 @@ impl Metrics {
             composited: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
             mask_errors: AtomicU64::new(0),
+            masks_computed: AtomicU64::new(0),
             latency_us: AtomicU64::new(0),
             capture_fps: FpsMeter::new(),
             composite_fps: FpsMeter::new(),
@@ -72,6 +76,11 @@ impl Metrics {
         self.mask_errors.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Records a successful async mask computation.
+    pub fn on_mask_computed(&self) {
+        self.masks_computed.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Records end-to-end latency: `now_us - captured_at_us`.
     pub fn record_latency(&self, now_us: u64, captured_at_us: u64) {
         self.latency_us
@@ -83,6 +92,7 @@ impl Metrics {
             frames_captured: self.captured.load(Ordering::Relaxed),
             frames_composited: self.composited.load(Ordering::Relaxed),
             frames_dropped: self.dropped.load(Ordering::Relaxed),
+            masks_computed: self.masks_computed.load(Ordering::Relaxed),
             mask_errors: self.mask_errors.load(Ordering::Relaxed),
             latency_us: self.latency_us.load(Ordering::Relaxed),
             capture_fps: self.capture_fps.read(),
@@ -144,12 +154,14 @@ mod tests {
         m.on_composite();
         m.on_drop();
         m.on_mask_error();
+        m.on_mask_computed();
         m.record_latency(1_000, 400);
         let s = m.snapshot();
         assert_eq!(s.frames_captured, 2);
         assert_eq!(s.frames_composited, 1);
         assert_eq!(s.frames_dropped, 1);
         assert_eq!(s.mask_errors, 1);
+        assert_eq!(s.masks_computed, 1);
         assert_eq!(s.latency_us, 600);
     }
 

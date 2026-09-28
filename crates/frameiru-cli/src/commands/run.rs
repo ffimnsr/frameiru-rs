@@ -165,7 +165,8 @@ fn build_segmenter(args: &RunArgs) -> anyhow::Result<Option<Box<dyn Segmenter>>>
     };
     #[cfg(feature = "onnx")]
     {
-        let config = frameiru_segment::OnnxConfig::new(args.resolution())?;
+        let input_size = super::parse_resolution(&args.input_size)?;
+        let config = frameiru_segment::OnnxConfig::new(input_size)?;
         let segmenter = frameiru_segment::OnnxSegmenter::load(path, config)
             .with_context(|| format!("cannot load model {}", path.display()))?;
         Ok(Some(Box::new(segmenter)))

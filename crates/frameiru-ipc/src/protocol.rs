@@ -38,6 +38,8 @@ pub struct StatusInfo {
     pub capture_fps: f64,
     pub composite_fps: f64,
     pub frames_composited: u64,
+    /// Successful async mask computations (inference rate).
+    pub masks_computed: u64,
     /// Capture-to-composite latency of the last frame, microseconds.
     pub latency_us: u64,
     pub background: BackgroundMode,
@@ -94,6 +96,7 @@ mod tests {
             capture_fps: 29.5,
             composite_fps: 30.0,
             frames_composited: 1234,
+            masks_computed: 60,
             latency_us: 42,
             background: BackgroundMode::Color { r: 1, g: 2, b: 3 },
         };

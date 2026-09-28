@@ -28,9 +28,11 @@ fn vs(@builtin(vertex_index) vi: u32) -> VsOut {
         vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0),
         vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, 1.0),
     );
+    // NDC is y-up, textures are y-down: bottom-left has uv.y = 1, so the
+    // image does not come out vertically flipped.
     var uv = array<vec2<f32>, 4>(
-        vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 0.0),
         vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 1.0),
+        vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 0.0),
     );
     var o: VsOut;
     o.pos = vec4<f32>(pos[vi], 0.0, 1.0);
@@ -70,9 +72,11 @@ fn vs(@builtin(vertex_index) vi: u32) -> VsOut {
         vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0),
         vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, 1.0),
     );
+    // NDC is y-up, textures are y-down: bottom-left has uv.y = 1, so the
+    // image does not come out vertically flipped.
     var uv = array<vec2<f32>, 4>(
-        vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 0.0),
         vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 1.0),
+        vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 0.0),
     );
     var o: VsOut;
     o.pos = vec4<f32>(pos[vi], 0.0, 1.0);

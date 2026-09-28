@@ -51,13 +51,23 @@ fn control_the_engine_over_the_socket() {
     let server = IpcServer::bind(&path).unwrap();
     let control: Arc<dyn Control> = Arc::new(handle.clone());
     let server_thread = std::thread::spawn(move || server.run(control).unwrap());
-    std::thread::sleep(Duration::from_millis(50)); // let the server bind
+    // Bounded retry: the server's accept loop polls every 50ms.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline && !path.exists() {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(path.exists(), "server must bind {}", path.display());
 
     let client = IpcClient::connect(&path).unwrap();
 
-    // Status reports a running pipeline with a valid resolution.
+    // Status reports a running pipeline; the resolution appears once the
+    // first frame has composited (bounded wait, not a fixed sleep).
     let status = client.status().unwrap();
     assert!(status.running);
+    wait_until("engine reports a resolution", || {
+        client.status().unwrap().resolution.is_some()
+    });
+    let status = client.status().unwrap();
     assert_eq!(status.resolution, Some(res()));
 
     // Switch background over IPC; status follows the applied mode.
