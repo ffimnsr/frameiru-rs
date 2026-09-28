@@ -1,0 +1,22 @@
+[package]
+name = "frameiru-sink"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+# v4l2loopback virtual device writer via the `v4l` crate.
+v4l2 = ["dep:v4l", "dep:ouroboros"]
+
+[dependencies]
+frameiru-core = { workspace = true }
+thiserror.workspace = true
+tokio.workspace = true
+v4l = { version = "0.14", optional = true }
+ouroboros = { version = "0.18", optional = true }
+
+[dev-dependencies]
+# v4l2 feature enables the capture side of the passthrough integration test.
+frameiru-capture = { workspace = true, features = ["v4l2"] }

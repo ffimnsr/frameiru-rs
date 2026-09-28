@@ -1,0 +1,30 @@
+[package]
+name = "frameiru-cli"
+description = "Frameiru command-line application"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+# Everything on: GPU compositor, ONNX segmentation, V4L2 devices, D-Bus.
+full = ["gpu", "onnx", "v4l2", "dbus"]
+gpu = ["frameiru-compose/gpu"]
+onnx = ["frameiru-segment/onnx"]
+v4l2 = ["frameiru-capture/v4l2", "frameiru-sink/v4l2"]
+dbus = ["frameiru-ipc/dbus"]
+
+[dependencies]
+frameiru-core = { workspace = true }
+frameiru-capture = { workspace = true }
+frameiru-compose = { workspace = true }
+frameiru-ipc = { workspace = true }
+frameiru-pipeline = { workspace = true }
+frameiru-segment = { workspace = true }
+frameiru-sink = { workspace = true }
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+ctrlc = "3.4"

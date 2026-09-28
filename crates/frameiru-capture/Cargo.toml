@@ -1,0 +1,22 @@
+[package]
+name = "frameiru-capture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+# V4L2 device streaming via the `v4l` crate. The crate is self-contained
+# (bundled kernel headers, ioctls via libc) so no system libv4l is required,
+# but the feature is off by default to keep headless/CI builds dependency-free.
+v4l2 = ["dep:v4l", "dep:ouroboros"]
+# Hardware MJPEG decoding support (zune-jpeg, pure Rust).
+mjpeg = ["dep:zune-jpeg"]
+
+[dependencies]
+frameiru-core = { workspace = true }
+thiserror.workspace = true
+v4l = { version = "0.14", optional = true }
+ouroboros = { version = "0.18", optional = true }
+zune-jpeg = { version = "0.4", optional = true }

@@ -1,0 +1,20 @@
+[package]
+name = "frameiru-segment"
+description = "ONNX background segmentation: letterboxing, model runner, temporal mask smoothing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+# ONNX inference via the `ort` crate. Kept off by default: enabling it
+# downloads onnxruntime binaries at build time and pulls the model download
+# helper (ureq). Preprocessing, postprocessing, and the temporal smoother
+# are always available and fully tested without it.
+onnx = ["dep:ort", "dep:ureq"]
+
+[dependencies]
+frameiru-core = { workspace = true }
+ort = { version = "2.0.0-rc.13", optional = true, features = ["download-binaries"] }
+ureq = { version = "2", optional = true }

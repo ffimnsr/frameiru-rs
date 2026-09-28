@@ -1,0 +1,22 @@
+[package]
+name = "frameiru-compose"
+description = "Background replacement compositor: CPU fallback and wgpu GPU rendering"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+# wgpu rendering pipeline. Off by default so headless/CI builds stay light;
+# `new_compositor` falls back to the CPU compositor when unavailable.
+gpu = ["dep:wgpu", "dep:pollster"]
+
+[dependencies]
+frameiru-core = { workspace = true }
+bytemuck.workspace = true
+rayon = "1.10"
+image = "0.25"
+tracing.workspace = true
+wgpu = { version = "25", optional = true }
+pollster = { version = "0.4", optional = true }

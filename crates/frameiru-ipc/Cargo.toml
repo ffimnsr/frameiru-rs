@@ -1,0 +1,20 @@
+[package]
+name = "frameiru-ipc"
+description = "IPC control plane: Unix domain socket server/client and optional D-Bus service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+# D-Bus service via zbus. Off by default: pulls an async runtime and an
+# executor; the Unix socket control plane needs none of that.
+dbus = ["dep:zbus"]
+
+[dependencies]
+frameiru-core = { workspace = true, features = ["serde"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tracing.workspace = true
+zbus = { version = "5", optional = true }

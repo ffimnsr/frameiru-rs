@@ -421,63 +421,63 @@ Commands:
 ## 8. Phased Implementation Roadmap
 
 ### Phase 1: Workspace Scaffolding & Core Primitives
-- [ ] Initialize Cargo workspace with all crate directories.
-- [ ] Implement `frameiru-core`:
-  - `PixelFormat`, `Resolution`, `FrameMetadata`, `FrameBuffer`, `BackgroundMode`.
-  - Zero-allocation `BufferPool`.
-  - Optional Slint image conversion helper (`slint_compat.rs`).
-  - Traits: `FrameSource`, `Segmenter`, `Compositor`, `FrameSink`.
-  - Unit tests for resolution helpers, buffer allocation, and pixel format calculations.
+- [x] Initialize Cargo workspace with all crate directories.
+- [x] Implement `frameiru-core`:
+  - [x] `PixelFormat`, `Resolution`, `FrameMetadata`, `FrameBuffer`, `BackgroundMode`.
+  - [x] Zero-allocation `BufferPool`.
+  - [x] Optional Slint image conversion helper (`slint_compat.rs`).
+  - [x] Traits: `FrameSource`, `Segmenter`, `Compositor`, `FrameSink`.
+  - [x] Unit tests for resolution helpers, buffer allocation, and pixel format calculations.
 
 ### Phase 2: Capture & Sink Roundtrip (Passthrough)
-- [ ] Implement `frameiru-capture`:
-  - V4L2 device streaming via `v4l` crate.
-  - Format decoding (YUYV to RGB24, MJPEG to RGB24).
-  - Synthetic `MockSource` generating animated test pattern for tests.
-- [ ] Implement `frameiru-sink`:
-  - V4L2 virtual device loopback writer.
-  - In-memory `BroadcastSink` for preview subscribers.
-  - RGB24 to YUYV422 SIMD conversion.
-  - `MockSink` for validation.
-- [ ] Test: End-to-end webcam passthrough (`/dev/video0` -> passthrough -> `/dev/video10`).
+- [x] Implement `frameiru-capture`:
+  - [x] V4L2 device streaming via `v4l` crate.
+  - [x] Format decoding (YUYV to RGB24, MJPEG to RGB24).
+  - [x] Synthetic `MockSource` generating animated test pattern for tests.
+- [x] Implement `frameiru-sink`:
+  - [x] V4L2 virtual device loopback writer.
+  - [x] In-memory `BroadcastSink` for preview subscribers.
+  - [x] RGB24 to YUYV422 SIMD conversion.
+  - [x] `MockSink` for validation.
+- [x] Test: End-to-end webcam passthrough (`/dev/video0` -> passthrough -> `/dev/video10`).
 
 ### Phase 3: ONNX Segmentation Engine & Letterboxing
-- [ ] Implement `frameiru-segment`:
-  - Integration with `ort` crate.
-  - Aspect-ratio letterbox preprocessing and normalization.
-  - Model runner (MODNet, RMBG-2.0, MediaPipe).
-  - Postprocessing: unletterbox and bilinear upsample to frame resolution.
-  - `TemporalSmoother` with configurable $\alpha$.
-- [ ] Model download helper for standard ONNX weights.
-- [ ] Unit tests for preprocessing tensor shapes, smoother exponential formula, and bilinear upscaler.
+- [x] Implement `frameiru-segment`:
+  - [x] Integration with `ort` crate.
+  - [x] Aspect-ratio letterbox preprocessing and normalization.
+  - [x] Model runner (MODNet, RMBG-2.0, MediaPipe).
+  - [x] Postprocessing: unletterbox and bilinear upsample to frame resolution.
+  - [x] `TemporalSmoother` with configurable $\alpha$.
+- [x] Model download helper for standard ONNX weights.
+- [x] Unit tests for preprocessing tensor shapes, smoother exponential formula, and bilinear upscaler.
 
 ### Phase 4: Compositor
-- [ ] Implement `frameiru-compose`:
-  - `cpu.rs`: Multi-threaded CPU fallback compositor using `rayon` (blur, replace image, color).
-  - `gpu.rs`: `wgpu` rendering pipeline (texture upload, WGSL shader blending, blur pass).
-  - Background modes: `Blur`, `Image`, `Color`, `Passthrough`.
-- [ ] Automated fallback logic: try WGPU; if initialization fails, log warning and use CPU compositor.
+- [x] Implement `frameiru-compose`:
+  - [x] `cpu.rs`: Multi-threaded CPU fallback compositor using `rayon` (blur, replace image, color).
+  - [x] `gpu.rs`: `wgpu` rendering pipeline (texture upload, WGSL shader blending, blur pass).
+  - [x] Background modes: `Blur`, `Image`, `Color`, `Passthrough`.
+- [x] Automated fallback logic: try WGPU; if initialization fails, log warning and use CPU compositor.
 
 ### Phase 5: Pipeline Engine & Preview Stream
-- [ ] Implement `frameiru-pipeline`:
-  - Embeddable `Engine` and cloneable `PipelineHandle`.
-  - Channel architecture separating capture, inference, and composition.
-  - Dynamic mask slot (`ArcSwap` or crossbeam channel with drop policy).
-  - Preview stream via `broadcast::Sender<Arc<FrameBuffer>>` for UI consumers.
-  - Frame rate pacing loop with latency and FPS counters.
-  - Clean shutdown handler.
+- [x] Implement `frameiru-pipeline`:
+  - [x] Embeddable `Engine` and cloneable `PipelineHandle`.
+  - [x] Channel architecture separating capture, inference, and composition.
+  - [x] Dynamic mask slot (`ArcSwap` or crossbeam channel with drop policy).
+  - [x] Preview stream via `broadcast::Sender<Arc<FrameBuffer>>` for UI consumers.
+  - [x] Frame rate pacing loop with latency and FPS counters.
+  - [x] Clean shutdown handler.
 
 ### Phase 6: IPC & Dynamic Control
-- [ ] Implement `frameiru-ipc`:
-  - Unix Domain Socket server and client.
-  - IPC message protocol for status, background changes, and shutdown.
-  - Optional `zbus` D-Bus provider.
+- [x] Implement `frameiru-ipc`:
+  - [x] Unix Domain Socket server and client.
+  - [x] IPC message protocol for status, background changes, and shutdown.
+  - [x] Optional `zbus` D-Bus provider.
 
 ### Phase 7: CLI Application
-- [ ] Implement `frameiru-cli`:
-  - `clap` parser with subcommands (`run`, `start`, `stop`, `status`, `set-bg`, `devices`, `benchmark`, `models`).
-  - Auto-discovery for physical webcams and loopback devices.
-  - Standalone daemon management.
+- [x] Implement `frameiru-cli`:
+  - [x] `clap` parser with subcommands (`run`, `start`, `stop`, `status`, `set-bg`, `devices`, `benchmark`, `models`).
+  - [x] Auto-discovery for physical webcams and loopback devices.
+  - [x] Standalone daemon management.
 
 ### Phase 8: Slint GUI Application (`frameiru-ui`)
 - [ ] Implement `main.slint`:

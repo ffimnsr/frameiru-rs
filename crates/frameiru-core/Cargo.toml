@@ -1,0 +1,20 @@
+[package]
+name = "frameiru-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+slint = ["dep:slint"]
+serde = ["dep:serde"]
+
+[dependencies]
+thiserror.workspace = true
+bytemuck.workspace = true
+serde = { workspace = true, optional = true }
+slint = { version = "1.9", optional = true, default-features = false, features = ["compat-1-2", "std"] }
+
+[dev-dependencies]
+serde = { workspace = true, features = ["derive"] }
