@@ -1513,6 +1513,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fast_image_resize"
+version = "6.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9c50201dc184ba6553da1695aac20a042efffbe2d84542cee31917c86c3ab1e"
+dependencies = [
+ "cfg-if",
+ "document-features",
+ "num-traits",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1732,6 +1744,7 @@ dependencies = [
  "ouroboros",
  "thiserror 2.0.21",
  "v4l",
+ "yuv",
  "zune-jpeg 0.4.21",
 ]
 
@@ -1797,6 +1810,7 @@ dependencies = [
  "frameiru-compose",
  "frameiru-core",
  "frameiru-ipc",
+ "frameiru-segment",
  "frameiru-sink",
  "tokio",
  "tracing",
@@ -1806,6 +1820,7 @@ dependencies = [
 name = "frameiru-segment"
 version = "0.1.0"
 dependencies = [
+ "fast_image_resize",
  "frameiru-core",
  "ort",
  "tracing",
@@ -7522,6 +7537,15 @@ dependencies = [
  "quote",
  "syn 3.0.6",
  "synstructure",
+]
+
+[[package]]
+name = "yuv"
+version = "0.8.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a295923535c00a4e72a50a0a1130097f93160b39892dd4d2d006b1e2b90d6bf9"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]

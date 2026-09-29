@@ -98,18 +98,40 @@ pub(crate) fn spawn_inference(
         .name("frameiru-inference".into())
         .spawn(move || {
             let mut segmenter = segmenter;
+            let mut smoother = shared.config.mask_alpha.map(|alpha| {
+                frameiru_segment::TemporalSmoother::new(alpha)
+                    .expect("mask_alpha validated by PipelineConfig")
+            });
+            let mut last_drops = 0u64;
             while !shared.stop.load(Ordering::Relaxed) {
                 match input_rx.recv_timeout(STOP_POLL) {
-                    Ok(frame) => match segmenter.segment(&frame) {
-                        Ok(mask) => {
-                            shared.mask_slot.store(Arc::new(mask));
-                            shared.metrics.on_mask_computed();
+                    Ok(frame) => {
+                        // Dropped capture frames mean the video skipped a
+                        // discontinuity: recurrent models and the EMA must
+                        // reset so neither can ghost across it.
+                        let drops = shared.metrics.snapshot().frames_dropped;
+                        if drops != last_drops {
+                            segmenter.reset_state();
+                            if let Some(s) = &mut smoother {
+                                s.reset();
+                            }
+                            last_drops = drops;
                         }
-                        Err(e) => {
-                            shared.metrics.on_mask_error();
-                            tracing::warn!("segmentation error (keeping previous mask): {e}");
+                        match segmenter.segment(&frame) {
+                            Ok(mask) => {
+                                let mask = match &mut smoother {
+                                    Some(s) => s.update(&mask),
+                                    None => mask,
+                                };
+                                shared.mask_slot.store(Arc::new(mask));
+                                shared.metrics.on_mask_computed();
+                            }
+                            Err(e) => {
+                                shared.metrics.on_mask_error();
+                                tracing::warn!("segmentation error (keeping previous mask): {e}");
+                            }
                         }
-                    },
+                    }
                     Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
                     Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
                 }

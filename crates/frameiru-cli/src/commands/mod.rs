@@ -49,9 +49,18 @@ pub struct RunArgs {
     #[arg(long)]
     pub model: Option<PathBuf>,
     /// ONNX model input canvas (WxH). Must match the graph: 320x320 for
-    /// u2net/silueta, 1024x1024 for isnet/BiRefNet/rmbg-2.0.
+    /// u2net/silueta, 1024x1024 for isnet/BiRefNet/rmbg-2.0, 256x256 for
+    /// RVM / MediaPipe selfie.
     #[arg(long, default_value = "320x320")]
     pub input_size: String,
+    /// Tensor normalization: `imagenet` (mean/std, u2net/silueta/isnet/RVM)
+    /// or `unit` (plain v/255, MediaPipe-style models).
+    #[arg(long, default_value = "imagenet")]
+    pub normalization: String,
+    /// Mask EMA blending factor: `off`, or 0.0 (freeze) ..= 1.0 (no
+    /// smoothing). Default 0.5 counters flicker and low mask rates.
+    #[arg(long, default_value = "0.5")]
+    pub mask_alpha: String,
     /// Capture width.
     #[arg(long, default_value_t = 640)]
     pub width: u32,
@@ -123,7 +132,30 @@ pub struct DeviceArg {
     pub device: PathBuf,
 }
 
-/// Parses `WxH` (e.g. `640x480`).
+/// Parses a mask-smoothing alpha: `off` or a value in [0, 1].
+pub fn parse_mask_alpha(s: &str) -> anyhow::Result<Option<f32>> {
+    if s.trim().eq_ignore_ascii_case("off") {
+        return Ok(None);
+    }
+    let alpha: f32 = s
+        .trim()
+        .parse()
+        .with_context(|| format!("bad mask-alpha {s:?}"))?;
+    if !alpha.is_finite() || !(0.0..=1.0).contains(&alpha) {
+        bail!("mask-alpha must be in [0, 1] or `off`, got {s:?}");
+    }
+    Ok(Some(alpha))
+}
+
+/// Parses a normalization scheme for ONNX preprocessing.
+#[cfg(feature = "onnx")]
+pub fn parse_normalization(s: &str) -> anyhow::Result<frameiru_segment::Normalization> {
+    Ok(match s.trim().to_ascii_lowercase().as_str() {
+        "imagenet" => frameiru_segment::Normalization::default(),
+        "unit" => frameiru_segment::Normalization::unit(),
+        other => bail!("unknown normalization {other:?}; use imagenet (mean/std) or unit (v/255)"),
+    })
+}
 pub fn parse_resolution(s: &str) -> anyhow::Result<Resolution> {
     let (w, h) = s
         .split_once('x')
@@ -192,6 +224,31 @@ pub fn parse_background(s: &str) -> anyhow::Result<BackgroundMode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_mask_alpha() {
+        assert_eq!(parse_mask_alpha("off").unwrap(), None);
+        assert_eq!(parse_mask_alpha("0.5").unwrap(), Some(0.5));
+        assert_eq!(parse_mask_alpha("0").unwrap(), Some(0.0));
+        assert_eq!(parse_mask_alpha("1").unwrap(), Some(1.0));
+        for bad in ["1.5", "-0.1", "nan", ""] {
+            assert!(parse_mask_alpha(bad).is_err(), "{bad:?} must fail");
+        }
+    }
+
+    #[cfg(feature = "onnx")]
+    #[test]
+    fn parses_normalization_schemes() {
+        assert_eq!(
+            parse_normalization("imagenet").unwrap(),
+            frameiru_segment::Normalization::default()
+        );
+        assert_eq!(
+            parse_normalization("unit").unwrap(),
+            frameiru_segment::Normalization::unit()
+        );
+        assert!(parse_normalization("nope").is_err());
+    }
 
     #[test]
     fn parses_resolutions() {

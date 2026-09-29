@@ -29,8 +29,9 @@ use v4l::video::traits::Capture;
 
 #[cfg(feature = "mjpeg")]
 use crate::decoders::mjpeg_to_rgb8;
-use crate::decoders::yuyv_to_rgb8;
+use crate::decoders::{nv12_to_rgb8, yuyv_to_rgb8};
 
+const NV12: FourCC = FourCC { repr: *b"NV12" };
 const YUYV: FourCC = FourCC { repr: *b"YUYV" };
 const MJPG: FourCC = FourCC { repr: *b"MJPG" };
 
@@ -55,8 +56,9 @@ impl V4l2Source {
     /// Opens a capture device and requests `resolution`.
     ///
     /// Falls back to the driver's current resolution when the request is
-    /// rejected. Prefers YUYV; with the `mjpeg` feature enabled, falls back
-    /// to MJPEG (decoded in software) when YUYV is unavailable.
+    /// rejected. Prefers NV12 (25% less USB bandwidth, the `yuv` crate's
+    /// fastest decode), then YUYV; with the `mjpeg` feature enabled, falls
+    /// back to MJPEG (decoded in software) when neither is available.
     pub fn open_with_resolution(
         path: impl AsRef<Path>,
         resolution: Option<Resolution>,
@@ -77,16 +79,18 @@ impl V4l2Source {
 
         let formats = device.enum_formats()?;
         let has = |fourcc: FourCC| formats.iter().any(|f| f.fourcc == fourcc);
-        let fourcc = if has(YUYV) {
+        let fourcc = if has(NV12) {
+            NV12
+        } else if has(YUYV) {
             YUYV
         } else if cfg!(feature = "mjpeg") && has(MJPG) {
             MJPG
         } else {
             return Err(FrameiruError::Unsupported(format!(
-                "{} exposes neither YUYV{} nor MJPEG",
+                "{} exposes neither NV12 nor YUYV{}",
                 path.display(),
                 if cfg!(feature = "mjpeg") {
-                    ""
+                    " nor MJPEG"
                 } else {
                     " (enable the `mjpeg` feature)"
                 }
@@ -154,6 +158,8 @@ impl FrameSource for V4l2Source {
 
         if self.fourcc == YUYV {
             yuyv_to_rgb8(&bytes[..used], w, h, &mut self.scratch)?;
+        } else if self.fourcc == NV12 {
+            nv12_to_rgb8(&bytes[..used], w, h, &mut self.scratch)?;
         } else if cfg!(feature = "mjpeg") && self.fourcc == MJPG {
             #[cfg(feature = "mjpeg")]
             {

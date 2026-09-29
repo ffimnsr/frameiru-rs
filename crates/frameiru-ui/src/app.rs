@@ -258,9 +258,9 @@ fn build_segmenter(
     #[cfg(feature = "onnx")]
     {
         let config = frameiru_segment::OnnxConfig::new(input_size)?;
-        let segmenter = frameiru_segment::OnnxSegmenter::load(path, config)
+        let segmenter = frameiru_segment::load_model(path, config)
             .with_context(|| format!("cannot load model {}", path.display()))?;
-        Ok(Some(Box::new(segmenter)))
+        Ok(Some(segmenter))
     }
     #[cfg(not(feature = "onnx"))]
     {

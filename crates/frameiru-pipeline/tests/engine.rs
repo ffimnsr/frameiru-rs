@@ -11,7 +11,7 @@ use frameiru_core::error::FrameiruError;
 use frameiru_core::format::PixelFormat;
 use frameiru_core::traits::{Compositor, FrameSink, Segmenter};
 use frameiru_core::{BackgroundMode, FrameBuffer, Resolution};
-use frameiru_pipeline::{Engine, PipelineConfig};
+use frameiru_pipeline::{Engine, PipelineConfig, PipelineHandle};
 use frameiru_sink::MockSink;
 
 const RES: Resolution = Resolution {
@@ -296,6 +296,157 @@ fn engine_drop_shuts_down_cleanly() {
     assert!(!handle.is_running());
     // Shutdown is idempotent.
     handle.shutdown();
+}
+
+/// Recurrent segmenter counting `reset_state` calls (RVM-style).
+struct ResetTrackingSegmenter {
+    resets: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl Segmenter for ResetTrackingSegmenter {
+    fn input_resolution(&self) -> Resolution {
+        res()
+    }
+
+    fn segment(&mut self, frame: &FrameBuffer) -> Result<Mask, FrameiruError> {
+        Ok(Mask::filled(frame.metadata.resolution, 0.5))
+    }
+
+    fn reset_state(&mut self) {
+        self.resets
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Dropped capture frames must trigger a segmenter state reset so recurrent
+/// models cannot ghost across discontinuities.
+#[test]
+fn dropped_frames_reset_stateful_segmenter() {
+    let source = MockSource::new(res()).unwrap();
+    let resets = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let segmenter = ResetTrackingSegmenter {
+        resets: Arc::clone(&resets),
+    };
+    let slow = SlowCompositor::new();
+    let cfg = PipelineConfig {
+        channel_capacity: 1,
+        max_fps: 0,
+        ..Default::default()
+    };
+    let engine = Engine::start(
+        cfg,
+        Box::new(source),
+        Some(Box::new(segmenter)),
+        Box::new(slow),
+        Box::new(RecordingSink::default()),
+    )
+    .unwrap();
+    let handle = engine.handle();
+
+    wait_until(
+        "capture drops + segmenter resets",
+        Duration::from_secs(10),
+        || {
+            handle.metrics().frames_captured >= 300
+                && resets.load(std::sync::atomic::Ordering::Relaxed) > 0
+        },
+    );
+    engine.shutdown();
+}
+
+/// Segmenter whose mask value flips on every segmentation call.
+struct OscillatingSegmenter {
+    value: f32,
+}
+
+impl Segmenter for OscillatingSegmenter {
+    fn input_resolution(&self) -> Resolution {
+        res()
+    }
+
+    fn segment(&mut self, frame: &FrameBuffer) -> Result<Mask, FrameiruError> {
+        let value = self.value;
+        self.value = 1.0 - self.value;
+        Ok(Mask::filled(frame.metadata.resolution, value))
+    }
+}
+
+fn run_with_alpha(
+    mask_alpha: Option<f32>,
+    segmenter: Box<dyn Segmenter>,
+) -> (Engine, PipelineHandle, RecordingSink) {
+    let source = MockSource::new(res()).unwrap();
+    let mut compositor = CpuCompositor::new();
+    compositor
+        .update_background(BackgroundMode::Color { r: 0, g: 0, b: 0 })
+        .unwrap();
+    let sink = RecordingSink::default();
+    let engine = Engine::start(
+        PipelineConfig {
+            max_fps: 0,
+            mask_alpha,
+            ..Default::default()
+        },
+        Box::new(source),
+        Some(segmenter),
+        Box::new(compositor),
+        Box::new(sink.clone()),
+    )
+    .unwrap();
+    let handle = engine.handle();
+    (engine, handle, sink)
+}
+
+/// With `mask_alpha = 0.0` the first mask freezes, so every composited
+/// frame after it is identical (pure black background) even though the
+/// segmenter oscillates. Without smoothing the oscillation shows up as
+/// changing frames.
+#[test]
+fn mask_smoothing_freezes_oscillating_masks() {
+    // Frozen at the first mask (0.0): output = black background, which is
+    // independent of the animated mock source. A constant segmenter keeps
+    // the assertion stable even though drop-triggered resets re-seed the
+    // EMA. Startup fallback frames use the all-foreground mask, so only
+    // assert on the post-segment tail.
+    let (engine, _handle, sink) =
+        run_with_alpha(Some(0.0), Box::new(ConstantSegmenter { value: 0.0 }));
+    wait_until(
+        "black (frozen-mask) frames",
+        Duration::from_secs(10),
+        || {
+            let r = sink.inner.lock().expect("sink mutex poisoned");
+            r.len() >= 40 && r.iter().filter(|f| f.data.iter().all(|&v| v == 0)).count() >= 30
+        },
+    );
+    let recorded = sink.inner.lock().expect("sink mutex poisoned").clone();
+    let mut black = recorded
+        .iter()
+        .skip_while(|f| f.data.iter().any(|&v| v != 0));
+    let black_count = black.clone().count();
+    assert!(
+        black_count >= 30 && black.all(|f| f.data.iter().all(|&v| v == 0)),
+        "frozen mask must pin the output to pure black after the first mask"
+    );
+    drop(recorded);
+    engine.shutdown();
+
+    let (engine, handle, sink) =
+        run_with_alpha(None, Box::new(OscillatingSegmenter { value: 0.0 }));
+    wait_until("frames composited", Duration::from_secs(10), || {
+        handle.metrics().frames_composited >= 40
+    });
+    let recorded = sink.inner.lock().expect("sink mutex poisoned").clone();
+    let differing = recorded
+        .iter()
+        .zip(recorded.iter().skip(1))
+        .filter(|(a, b)| a.data != b.data)
+        .count();
+    assert!(
+        differing > 0,
+        "unsmoothed oscillating masks must produce changing frames"
+    );
+    drop(recorded);
+    engine.shutdown();
 }
 
 #[test]

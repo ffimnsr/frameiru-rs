@@ -27,6 +27,7 @@ pub fn run(args: RunArgs) -> anyhow::Result<()> {
     let engine = Engine::start(
         PipelineConfig {
             max_fps: args.max_fps,
+            mask_alpha: super::parse_mask_alpha(&args.mask_alpha)?,
             ..Default::default()
         },
         source,
@@ -166,10 +167,11 @@ fn build_segmenter(args: &RunArgs) -> anyhow::Result<Option<Box<dyn Segmenter>>>
     #[cfg(feature = "onnx")]
     {
         let input_size = super::parse_resolution(&args.input_size)?;
-        let config = frameiru_segment::OnnxConfig::new(input_size)?;
-        let segmenter = frameiru_segment::OnnxSegmenter::load(path, config)
+        let mut config = frameiru_segment::OnnxConfig::new(input_size)?;
+        config.normalization = super::parse_normalization(&args.normalization)?;
+        let segmenter = frameiru_segment::load_model(path, config)
             .with_context(|| format!("cannot load model {}", path.display()))?;
-        Ok(Some(Box::new(segmenter)))
+        Ok(Some(segmenter))
     }
     #[cfg(not(feature = "onnx"))]
     {

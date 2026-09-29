@@ -28,9 +28,10 @@ pub enum ModelsSub {
         /// Direct download URL; overrides `--model`.
         #[arg(long)]
         url: Option<String>,
-        /// Destination file.
-        #[arg(long, default_value = "models/silueta.onnx")]
-        output: PathBuf,
+        /// Destination file. Defaults to `models/<model>.onnx` when
+        /// `--model` is given, otherwise `models/silueta.onnx`.
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
 }
 
@@ -73,21 +74,36 @@ fn list() -> anyhow::Result<()> {
     }
 }
 
-fn download(model: Option<String>, url: Option<String>, output: PathBuf) -> anyhow::Result<()> {
+fn download(
+    model: Option<String>,
+    url: Option<String>,
+    output: Option<PathBuf>,
+) -> anyhow::Result<()> {
     #[cfg(feature = "onnx")]
     {
         use frameiru_segment::download as dl;
 
-        let (url, input_hint) = match url {
-            Some(url) => (url, None),
-            None => match model.as_deref().and_then(dl::find_model) {
-                Some(spec) => (spec.url.to_string(), Some(spec.input)),
-                None => (
-                    dl::default_model().url.to_string(),
-                    Some(dl::default_model().input),
-                ),
-            },
+        // Resolve the registry entry first so both URL and default output
+        // follow the selected model.
+        let spec = match model.as_deref().map(dl::find_model) {
+            Some(Some(spec)) => Some(spec),
+            Some(None) => anyhow::bail!(
+                "unknown model {:?}; see `frameiru models list` for names",
+                model.as_deref().unwrap_or("")
+            ),
+            None => None,
         };
+        let (url, input_hint) = match url {
+            Some(url) => (url, spec.map(|s| s.input)),
+            None => (
+                spec.map(|s| s.url)
+                    .unwrap_or_else(|| dl::default_model().url)
+                    .to_string(),
+                Some(spec.map(|s| s.input).unwrap_or(dl::default_model().input)),
+            ),
+        };
+        let name = spec.map(|s| s.name).unwrap_or(dl::default_model().name);
+        let output = output.unwrap_or_else(|| PathBuf::from("models").join(format!("{name}.onnx")));
         if let Some(input) = input_hint {
             println!(
                 "model input: {}x{} (pass this as --input-size)",

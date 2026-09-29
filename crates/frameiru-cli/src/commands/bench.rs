@@ -21,6 +21,12 @@ pub struct BenchArgs {
     /// ONNX model input canvas (WxH); must match the graph.
     #[arg(long, default_value = "320x320")]
     pub input_size: String,
+    /// Tensor normalization: `imagenet` (default) or `unit` (MediaPipe).
+    #[arg(long, default_value = "imagenet")]
+    pub normalization: String,
+    /// Mask EMA blending factor: `off`, or 0.0 (freeze) ..= 1.0.
+    #[arg(long, default_value = "0.5")]
+    pub mask_alpha: String,
     /// Background used for compositing.
     #[arg(long, default_value = "color:0,120,0")]
     pub background: String,
@@ -36,10 +42,9 @@ pub fn benchmark(args: BenchArgs) -> anyhow::Result<()> {
             #[cfg(feature = "onnx")]
             {
                 let input_size = super::parse_resolution(&args.input_size)?;
-                let config = frameiru_segment::OnnxConfig::new(input_size)?;
-                Some(Box::new(frameiru_segment::OnnxSegmenter::load(
-                    path, config,
-                )?))
+                let mut config = frameiru_segment::OnnxConfig::new(input_size)?;
+                config.normalization = super::parse_normalization(&args.normalization)?;
+                Some(frameiru_segment::load_model(path, config)?)
             }
             #[cfg(not(feature = "onnx"))]
             {
@@ -58,6 +63,7 @@ pub fn benchmark(args: BenchArgs) -> anyhow::Result<()> {
     let engine = Engine::start(
         PipelineConfig {
             max_fps: 0,
+            mask_alpha: super::parse_mask_alpha(&args.mask_alpha)?,
             ..Default::default()
         },
         Box::new(source),

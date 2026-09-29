@@ -17,6 +17,8 @@ mjpeg = ["dep:zune-jpeg"]
 [dependencies]
 frameiru-core = { workspace = true }
 thiserror.workspace = true
+# Fast, SIMD-accelerated YUV conversion (the upstream-tested path).
+yuv = "0.8"
 v4l = { version = "0.14", optional = true }
 ouroboros = { version = "0.18", optional = true }
 zune-jpeg = { version = "0.4", optional = true }

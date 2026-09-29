@@ -19,3 +19,5 @@ frameiru-core = { workspace = true }
 ort = { version = "2.0.0-rc.13", optional = true, features = ["download-binaries"] }
 ureq = { version = "2", optional = true }
 tracing.workspace = true
+# SIMD-accelerated bilinear resize for letterbox preprocessing.
+fast_image_resize = "6"

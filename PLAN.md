@@ -493,3 +493,88 @@ Commands:
 - [x] Clippy checks with zero warnings.
 - [x] Flaky test protection: isolated synthetic sources and mocked sinks, no global shared state.
 - [x] End-to-end verification with virtual camera and browser / video consumer.
+
+---
+
+## 9. Update Roadmap: Real-Time Background Optimization
+
+Sourced from `docs/research/Real-Time Background Blur Optimization.md`, mapped
+onto the current codebase. Baseline (this machine, 640x480 video / 320x320
+inference, async pipeline): video ~30-44 fps, masks at **1.75/s (silueta)**
+and **4.95/s (u2netp)** — inference-bound. Target: masks at video rate on
+mid-range CPUs by switching model + SIMD + edge-aware upsampling.
+
+### U9.1 Model strategy (highest impact — inference dominates every metric)
+- [x] Add **RVM (Robust Video Matting, MobileNetV3)** to the model registry
+  - verified URL: `https://github.com/PeterL1n/RobustVideoMatting/releases/download/v1.0.0/rvm_mobilenetv3_fp32.onnx` (~15 MB, no auth)
+  - measured: **17.3 masks/s** on this machine (vs 1.75 silueta / 4.95 u2netp),
+  temporal coherence via recurrent state
+- [x] Add **MediaPipe Selfie Segmentation** ONNX (256x256, ~450 KB, 106K params)
+  - measured: **32.3 masks/s fp32** on this machine (~2x RVM; int8 was
+  slower here at 22.9 — AMD MLAS int8 kernels). Uses `--normalization unit`
+  (plain v/255), auto-detected as single-input
+  - registry entry pending: user-supplied mirror URL (`sample_models/`
+  files came from an external source not yet in the registry)
+- [x] Stateful segmenter support: `Segmenter::reset_state` (default no-op),
+  `RvmSegmenter` feeding recurrent tensors frame→frame, auto-detected by
+  `load_model` (>= 5 inputs); pipeline resets state when capture frames drop
+- [x] Re-benchmark masks/s per model; keep `benchmark` as the gate
+
+### U9.2 Temporal stability
+- [x] Wire the existing `TemporalSmoother` (EMA) into the async inference
+  thread before storing to the mask slot; expose alpha (CLI `--mask-alpha`,
+  default 0.5; `off` disables, 0 freezes) — counters low mask rates and
+  MediaPipe flicker; EMA also resets on capture drops alongside RVM state
+- [x] RVM state reset policy per U9.1
+
+### U9.3 Zero-copy & SIMD data path
+- [x] V4L2 mmap capture (already in place)
+- [x] SSSE3 RGB→YUYV encoder (already in place, bit-exact vs scalar)
+- [x] YUYV decode via the `yuv` crate (SIMD AVX2; measured **0.12 ms/frame**
+  at 640x480 in release vs ~2-4 ms scalar; odd widths keep the scalar
+  path since our rows truncate the trailing pair)
+- [x] `ort` tensor hand-off verified zero-copy: `TensorRef::from_array_view`
+  over a reused preprocessing buffer (no per-frame tensor allocation/copy)
+- [x] Letterbox resize via `fast_image_resize` (SIMD Interpolation-bilinear)
+  — release **0.33 ms** vs 19.7 ms debug, so debug builds keep the fused
+  scalar sampler (`cfg!(debug_assertions)`); release MediaPipe inference
+  now **~135-141 masks/s** (7 ms/mask)
+- [ ] (Future) NV12 capture negotiation: many webcams expose NV12 (lighter on
+  USB bandwidth); convert via the `yuv` crate's `yuv_nv12_to_rgb` — the
+  crate's fastest path. RGB→YUYV encoding stays single-pass ours (the
+  crate needs two hops through planar YUV422)
+
+### U9.4 Edge-aware mask upsampling (quality)
+- [ ] Replace bilinear upscale in `postprocess_mask` with a **Guided Filter**
+  (O(n), edge-preserving, uses the full-res RGB frame as guidance) — kills
+  the blocky/haloed matte edge without a brute-force joint bilateral filter
+- [ ] wgpu compute-shader version with CPU fallback (low-spec / headless)
+- [ ] Regression test: mask edge must follow a sharp RGB boundary after
+  upsampling (extend existing orientation/geometry tests)
+
+### U9.5 Halo-free rendering (quality)
+- [ ] CoC-weighted separable blur in WGSL: blur radius proportional to
+  inverted alpha per pixel; foreground pixels (alpha > 0.5) excluded from
+  the kernel — removes halo artifacts in `blur:` mode (replaces the plain
+  box blur)
+- [ ] Light wrapping for `image:` backgrounds: spill background colors over
+  subject edges for a natural composite
+
+### U9.6 Inference orchestration & thermals
+- [ ] Cap ORT intra-op threads (CLI `--threads`, default = physical cores);
+  research: 2-4 pinned threads often beat all-logical-cores for latency and
+  thermals on constrained CPUs
+- [ ] Quantized variants (fp16/int8) in the model registry once fp16 mask
+  rendering + validation exist
+- [ ] OpenVINO EP for Intel iGPU users: documented, gated behind a custom
+  ORT build (`download-binaries` ships no OpenVINO prebuilt). AMD ROCm is
+  dropped for Polaris-era GPUs — no GPU inference path for them; Vulkan EP
+  unsupported by prebuilt ORT
+- [x] Frame-rate capping exists (`--max-fps`); keep inference sampling
+  decoupled (async mask slot) — no change needed
+
+### U9.7 Acceptance criteria
+- [ ] Masks at ≥ 15/s on a mid-range CPU (MediaPipe) and ≥ 30/s (RVM) at
+  640x480 video, no flicker with U9.2
+- [ ] Matte edge tracks the subject with U9.4; no halo in blur mode with U9.5
+- [ ] Full test suite + cargo fmt/clippy stay green across the above

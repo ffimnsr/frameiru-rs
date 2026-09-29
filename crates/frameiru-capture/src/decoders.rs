@@ -42,6 +42,27 @@ pub fn yuyv_to_rgb8(
         });
     }
 
+    // Even widths (the real camera case) go through the SIMD-accelerated
+    // `yuv` crate; odd widths keep the scalar loop because our packed rows
+    // truncate the trailing pair to [Y, U] rather than padding it.
+    if width.is_multiple_of(2) {
+        let packed = yuv::YuvPackedImage {
+            yuy: input,
+            yuy_stride: w as u32 * 2,
+            width,
+            height,
+        };
+        yuv::yuyv422_to_rgb(
+            &packed,
+            output,
+            w as u32 * 3,
+            yuv::YuvRange::Limited,
+            yuv::YuvStandardMatrix::Bt601,
+        )
+        .map_err(|e| FrameiruError::InvalidArgument(format!("yuv decode failed: {e}")))?;
+        return Ok(());
+    }
+
     for row in 0..h {
         let in_row = &input[row * w * 2..(row + 1) * w * 2];
         let out_row = &mut output[row * w * 3..(row + 1) * w * 3];
@@ -70,6 +91,67 @@ pub fn yuyv_to_rgb8(
             out_row[i + 2] = clamp_u8(b);
         }
     }
+    Ok(())
+}
+
+/// Decodes a tightly packed NV12 (4:2:0 bi-planar) frame into RGB24.
+///
+/// `input` holds the full-resolution Y plane followed by interleaved UV at
+/// half resolution (`w * h * 3 / 2` bytes for even dimensions). Uses the
+/// `yuv` crate's SIMD NV12 path (its fastest conversion). Odd dimensions
+/// are rejected: 4:2:0 chroma subsampling requires even pairs.
+pub fn nv12_to_rgb8(
+    input: &[u8],
+    width: u32,
+    height: u32,
+    output: &mut [u8],
+) -> Result<(), FrameiruError> {
+    let w = width as usize;
+    let h = height as usize;
+    if width == 0 || height == 0 {
+        return Err(FrameiruError::InvalidArgument(
+            "NV12 dimensions must be non-zero".into(),
+        ));
+    }
+    if !width.is_multiple_of(2) || !height.is_multiple_of(2) {
+        return Err(FrameiruError::InvalidArgument(
+            "NV12 dimensions must be even".into(),
+        ));
+    }
+    let need_in = w * h * 3 / 2;
+    let need_out = w * h * 3;
+    if input.len() < need_in {
+        return Err(FrameiruError::InsufficientCapacity {
+            need: need_in,
+            have: input.len(),
+        });
+    }
+    if output.len() < need_out {
+        return Err(FrameiruError::InsufficientCapacity {
+            need: need_out,
+            have: output.len(),
+        });
+    }
+
+    let y_plane = &input[..w * h];
+    let uv_plane = &input[w * h..];
+    let planar = yuv::YuvBiPlanarImage {
+        y_plane,
+        y_stride: width,
+        uv_plane,
+        uv_stride: width,
+        width,
+        height,
+    };
+    yuv::yuv_nv12_to_rgb(
+        &planar,
+        output,
+        width * 3,
+        yuv::YuvRange::Limited,
+        yuv::YuvStandardMatrix::Bt601,
+        yuv::YuvConversionMode::Balanced,
+    )
+    .map_err(|e| FrameiruError::InvalidArgument(format!("nv12 decode failed: {e}")))?;
     Ok(())
 }
 
@@ -145,6 +227,29 @@ mod tests {
     fn rejects_zero_dimensions() {
         let mut out = vec![0u8; 3 * 3];
         assert!(yuyv_to_rgb8(&[0u8; 18], 0, 3, &mut out).is_err());
+    }
+
+    #[test]
+    fn nv12_gray_frame_decodes_to_gray() {
+        // 4x2 NV12: 8 luma bytes then 4 interleaved UV bytes (all 128).
+        let w = 4u32;
+        let h = 2u32;
+        let mut input = vec![0u8; (w * h * 3 / 2) as usize];
+        for i in 0..(w * h) as usize {
+            input[i] = 126; // limited-range mid gray
+        }
+        for i in (w * h) as usize..input.len() {
+            input[i] = 128; // neutral chroma
+        }
+        let mut out = vec![0u8; (w * h * 3) as usize];
+        nv12_to_rgb8(&input, w, h, &mut out).unwrap();
+        assert!(out.iter().all(|&v| (v as i32 - 128).abs() <= 6));
+    }
+
+    #[test]
+    fn nv12_rejects_odd_dimensions_and_small_buffers() {
+        assert!(nv12_to_rgb8(&[0u8; 8], 3, 2, &mut [0u8; 18]).is_err());
+        assert!(nv12_to_rgb8(&[0u8; 4], 4, 2, &mut [0u8; 24]).is_err());
     }
 
     #[test]

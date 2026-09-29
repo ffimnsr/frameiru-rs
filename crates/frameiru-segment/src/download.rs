@@ -35,6 +35,20 @@ pub const SILUETA: ModelSpec = ModelSpec {
     note: "good quality/size balance; default",
 };
 
+/// Robust Video Matting (MobileNetV3), official release: recurrent
+/// (temporal) matting, ~10-20 ms/frame on CPU at 256x256. Use with
+/// `--input-size 256x256`; the pipeline auto-detects it as stateful.
+pub const RVM_MOBILENETV3: ModelSpec = ModelSpec {
+    name: "rvm-mobilenetv3",
+    url: "https://github.com/PeterL1n/RobustVideoMatting/releases/download/v1.0.0/rvm_mobilenetv3_fp32.onnx",
+    input: Resolution {
+        width: 256,
+        height: 256,
+    },
+    size_mb: 15,
+    note: "recurrent (temporal) matting; best CPU quality/speed; stateful",
+};
+
 /// Lightweight U2-Net variant: fastest, noticeably lower quality.
 pub const U2NETP: ModelSpec = ModelSpec {
     name: "u2netp",
@@ -95,12 +109,15 @@ pub const BIREFNET_PORTRAIT: ModelSpec = ModelSpec {
 /// All known models, in download-recommendation order.
 pub const MODELS: &[ModelSpec] = &[
     SILUETA,
+    RVM_MOBILENETV3,
     U2NETP,
     U2NET,
     ISNET,
     RMBG20_MIRROR,
     BIREFNET_PORTRAIT,
 ];
+// TODO(U9.1): MediaPipe Selfie Segmentation ONNX mirror still to verify
+// (PINTO Model Zoo / HF mirrors are gated or stale).
 
 /// The model `frameiru models download` fetches when nothing is specified.
 pub fn default_model() -> &'static ModelSpec {

@@ -128,3 +128,44 @@ fn mask_is_not_horizontally_mirrored() {
         "mask edge at col {edge_x}: model path appears horizontally mirrored"
     );
 }
+
+/// RVM recurrent-state flow: states start zeroed, roll forward per frame,
+/// and reset to zero on `reset_state`. Run with `FRAMEIRU_TEST_MODEL`
+/// pointing at `rvm_mobilenetv3_fp32.onnx`.
+#[test]
+fn rvm_state_flow_and_reset() {
+    use frameiru_segment::{OnnxConfig, RvmSegmenter};
+
+    let path = std::env::var("FRAMEIRU_TEST_MODEL").unwrap_or_default();
+    let config = match OnnxConfig::new(Resolution {
+        width: 256,
+        height: 256,
+    }) {
+        Ok(c) => c,
+        Err(_) => std::process::exit(0),
+    };
+    let mut rvm = match RvmSegmenter::load(&path, config) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("skipping RVM test (point FRAMEIRU_TEST_MODEL at an RVM model): {e}");
+            std::process::exit(0);
+        }
+    };
+
+    assert_eq!(rvm.state_checksum(), 0, "states start zeroed");
+    let frame = frame_with_edge(320, (255, 255, 255), (0, 0, 0));
+    let mask = rvm.segment(&frame).expect("first RVM inference");
+    assert_eq!(
+        mask.resolution,
+        Resolution {
+            width: 640,
+            height: 480
+        }
+    );
+    assert_ne!(rvm.state_checksum(), 0, "states roll forward");
+
+    rvm.reset_state();
+    assert_eq!(rvm.state_checksum(), 0, "reset zeroes the states");
+    // The pipeline keeps segmenting after a reset.
+    rvm.segment(&frame).expect("inference after reset");
+}

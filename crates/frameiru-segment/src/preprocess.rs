@@ -96,6 +96,14 @@ impl Normalization {
         }
         Ok(Self { mean, std })
     }
+
+    /// Plain `v / 255` scaling (range [0, 1]), used by MediaPipe-style models.
+    pub fn unit() -> Self {
+        Self {
+            mean: [0.0; 3],
+            std: [1.0; 3],
+        }
+    }
 }
 
 /// Normalizes one 0..255 sample.
@@ -107,7 +115,8 @@ pub fn normalize_pixel(v: u8, mean: f32, std: f32) -> f32 {
 ///
 /// `out` must hold at least `3 * target.area()` floats and is overwritten:
 /// padding regions become `0.0` (in normalized space) and the letterboxed
-/// inner region is bilinear-resampled from `src` with edge clamping.
+/// inner region is bilinear-resampled from `src` (SIMD-accelerated via
+/// `fast_image_resize`) with edge clamping.
 pub fn preprocess_rgb8(
     src: &[u8],
     src_res: Resolution,
@@ -141,28 +150,79 @@ pub fn preprocess_rgb8(
     out[..need_out].fill(0.0);
 
     let (sw, sh) = (src_res.width as usize, src_res.height as usize);
+
+    // Inner-region RGB. Debug builds use the fused scalar sampler
+    // (`fast_image_resize`'s SIMD paths collapse to slow scalar fallbacks,
+    // ~20 ms/call here); release builds get the SIMD resize. The 1:1 case
+    // skips resizing in both.
+    let inner: Vec<u8> = if iw == sw && ih == sh {
+        src.to_vec()
+    } else {
+        #[cfg(debug_assertions)]
+        {
+            let mut buf = Vec::with_capacity(iw * ih * 3);
+            for y in 0..ih {
+                for x in 0..iw {
+                    let sx = sample_coord(x as f32, iw as f32, sw as f32);
+                    let sy = sample_coord(y as f32, ih as f32, sh as f32);
+                    let (r, g, b) = bilinear_sample_rgb8(src, sw, sh, sx, sy);
+                    buf.extend_from_slice(&[r, g, b]);
+                }
+            }
+            buf
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            let src_view = fast_image_resize::images::ImageRef::new(
+                src_res.width,
+                src_res.height,
+                src,
+                fast_image_resize::PixelType::U8x3,
+            )
+            .map_err(|e| FrameiruError::InvalidArgument(format!("resize input view: {e}")))?;
+            let mut resized = fast_image_resize::images::Image::new(
+                iw as u32,
+                ih as u32,
+                fast_image_resize::PixelType::U8x3,
+            );
+            let mut resizer = fast_image_resize::Resizer::new();
+            let options = fast_image_resize::ResizeOptions::new().resize_alg(
+                fast_image_resize::ResizeAlg::Interpolation(
+                    fast_image_resize::FilterType::Bilinear,
+                ),
+            );
+            resizer
+                .resize(&src_view, &mut resized, &options)
+                .map_err(|e| FrameiruError::InvalidArgument(format!("resize failed: {e}")))?;
+            resized.into_vec()
+        }
+    };
+
+    // Normalize the inner region into the CHW planes around the padding.
     for y in 0..ih {
         for x in 0..iw {
-            let sx = sample_coord(x as f32, iw as f32, sw as f32);
-            let sy = sample_coord(y as f32, ih as f32, sh as f32);
-            let (r, g, b) = bilinear_sample_rgb8(src, sw, sh, sx, sy);
+            let i = (y * iw + x) * 3;
             let dst = (oy + y) * tw + ox + x;
-            out[dst] = normalize_pixel(r, normalization.mean[0], normalization.std[0]);
-            out[total + dst] = normalize_pixel(g, normalization.mean[1], normalization.std[1]);
-            out[2 * total + dst] = normalize_pixel(b, normalization.mean[2], normalization.std[2]);
+            out[dst] = normalize_pixel(inner[i], normalization.mean[0], normalization.std[0]);
+            out[total + dst] =
+                normalize_pixel(inner[i + 1], normalization.mean[1], normalization.std[1]);
+            out[2 * total + dst] =
+                normalize_pixel(inner[i + 2], normalization.mean[2], normalization.std[2]);
         }
     }
     Ok(letterbox)
 }
 
 /// Maps a destination pixel to a source coordinate (texel-center convention),
-/// clamped to the source edge.
+/// clamped to the source edge. Debug-only: release uses the SIMD resize.
+#[cfg(debug_assertions)]
 fn sample_coord(dst: f32, dst_size: f32, src_size: f32) -> f32 {
     let s = (dst + 0.5) * (src_size / dst_size) - 0.5;
     s.clamp(0.0, src_size - 1.0)
 }
 
 /// Bilinear sample with edge clamping; `sx`/`sy` are clamped by the caller.
+#[cfg(debug_assertions)]
 pub(crate) fn bilinear_sample_rgb8(
     src: &[u8],
     sw: usize,

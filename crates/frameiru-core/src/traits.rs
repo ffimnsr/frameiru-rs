@@ -24,6 +24,12 @@ pub trait Segmenter: Send + 'static {
 
     /// Segments `frame` into a normalized soft mask.
     fn segment(&mut self, frame: &FrameBuffer) -> Result<Mask, FrameiruError>;
+
+    /// Clears any internal temporal state (recurrent models such as RVM).
+    /// Stateless models may ignore this; the default is a no-op. The
+    /// pipeline calls this when the capture stream drops frames so recurrent
+    /// state cannot ghost across discontinuities.
+    fn reset_state(&mut self) {}
 }
 
 /// Blends a source frame with a mask and a background mode.

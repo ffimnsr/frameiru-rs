@@ -9,6 +9,7 @@ authors.workspace = true
 [dependencies]
 frameiru-core = { workspace = true }
 frameiru-ipc = { workspace = true }
+frameiru-segment = { workspace = true }
 arc-swap.workspace = true
 crossbeam-channel.workspace = true
 tokio.workspace = true

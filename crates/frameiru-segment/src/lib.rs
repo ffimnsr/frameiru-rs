@@ -19,4 +19,4 @@ pub use preprocess::{preprocess_rgb8, Letterbox, Normalization};
 pub use smoother::TemporalSmoother;
 
 #[cfg(feature = "onnx")]
-pub use model::{OnnxConfig, OnnxSegmenter};
+pub use model::{load_model, OnnxConfig, OnnxSegmenter, RvmSegmenter};
