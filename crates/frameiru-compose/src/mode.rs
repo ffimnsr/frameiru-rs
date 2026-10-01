@@ -12,7 +12,8 @@ use frameiru_core::{BackgroundMode, Resolution};
 pub enum Background {
     /// Output the source frame untouched.
     Passthrough,
-    /// Box-blur the source frame behind the subject.
+    /// Halo-free foreground-aware blur behind the subject (foreground pixels
+    /// are excluded from the kernel so subject colors cannot smear the edge).
     Blur { radius: u32 },
     /// Solid color background.
     Color { r: u8, g: u8, b: u8 },

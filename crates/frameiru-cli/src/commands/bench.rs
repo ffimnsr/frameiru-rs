@@ -18,8 +18,9 @@ pub struct BenchArgs {
     /// ONNX model path; benchmark segmentation when set.
     #[arg(long)]
     pub model: Option<std::path::PathBuf>,
-    /// ONNX model input canvas (WxH); must match the graph.
-    #[arg(long, default_value = "320x320")]
+    /// ONNX model input canvas (WxH) when `--model` is given; the embedded
+    /// default is 256x256.
+    #[arg(long, default_value = "256x256")]
     pub input_size: String,
     /// Tensor normalization: `imagenet` (default) or `unit` (MediaPipe).
     #[arg(long, default_value = "imagenet")]
@@ -30,6 +31,9 @@ pub struct BenchArgs {
     /// Background used for compositing.
     #[arg(long, default_value = "color:0,120,0")]
     pub background: String,
+    /// ORT intra-op threads; default pins to the physical core count.
+    #[arg(long, value_name = "N")]
+    pub threads: Option<usize>,
 }
 
 pub fn benchmark(args: BenchArgs) -> anyhow::Result<()> {
@@ -37,24 +41,48 @@ pub fn benchmark(args: BenchArgs) -> anyhow::Result<()> {
     let background = super::parse_background(&args.background)?;
 
     let source = MockSource::new(resolution)?;
-    let segmenter: Option<Box<dyn Segmenter>> = match &args.model {
-        Some(path) => {
-            #[cfg(feature = "onnx")]
-            {
-                let input_size = super::parse_resolution(&args.input_size)?;
-                let mut config = frameiru_segment::OnnxConfig::new(input_size)?;
-                config.normalization = super::parse_normalization(&args.normalization)?;
-                Some(frameiru_segment::load_model(path, config)?)
+    let segmenter: Option<Box<dyn Segmenter>> = {
+        #[cfg(feature = "onnx")]
+        {
+            use frameiru_segment::{load_embedded, load_model, OnnxConfig, EMBEDDED_MODEL_INPUT};
+            let mut config = match &args.model {
+                Some(_) => {
+                    let input_size = super::parse_resolution(&args.input_size)?;
+                    let mut config = OnnxConfig::new(input_size)?;
+                    config.normalization = super::parse_normalization(&args.normalization)?;
+                    config
+                }
+                // No `--model`: benchmark the embedded fusion model.
+                None => {
+                    let mut config = OnnxConfig::new(EMBEDDED_MODEL_INPUT)?;
+                    config.normalization = frameiru_segment::embedded_normalization();
+                    config
+                }
+            };
+            // Benchmark the raw model: guided refinement and mask polish are
+            // fixed post-steps that would muddy masks/s comparisons.
+            config.refine_mask = false;
+            config.mask_dilate = 0;
+            config.mask_contrast = 0.0;
+            if args.threads == Some(0) {
+                anyhow::bail!("--threads must be >= 1 (omit it for the physical-core default)");
             }
-            #[cfg(not(feature = "onnx"))]
-            {
-                let _ = path;
+            config.intra_threads = args.threads;
+            let segmenter: Box<dyn Segmenter> = match &args.model {
+                Some(path) => load_model(path, config)?,
+                None => load_embedded(config)?,
+            };
+            Some(segmenter)
+        }
+        #[cfg(not(feature = "onnx"))]
+        {
+            if args.model.is_some() {
                 anyhow::bail!(
                     "segmentation needs the `onnx` feature; rebuild with `cargo build --features onnx`"
                 )
             }
+            None
         }
-        None => None,
     };
 
     let mut compositor = CpuCompositor::new();
@@ -64,6 +92,8 @@ pub fn benchmark(args: BenchArgs) -> anyhow::Result<()> {
         PipelineConfig {
             max_fps: 0,
             mask_alpha: super::parse_mask_alpha(&args.mask_alpha)?,
+            // Benchmarks gate raw model throughput: never throttle inference.
+            infer_max_fps: 0,
             ..Default::default()
         },
         Box::new(source),

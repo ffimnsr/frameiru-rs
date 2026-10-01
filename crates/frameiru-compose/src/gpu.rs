@@ -34,6 +34,9 @@ pub struct GpuCompositor {
     blur_v: wgpu::RenderPipeline,
     blur_uniform: wgpu::Buffer,
     background: Background,
+    /// Subject fill light in [0, 1]; 0 disables (see
+    /// [`Compositor::set_subject_light`]).
+    subject_light: f32,
 
     // Frame-sized resources, recreated when the resolution changes.
     frame_res: Resolution,
@@ -97,6 +100,7 @@ impl GpuCompositor {
             blur_v,
             blur_uniform,
             background: Background::Passthrough,
+            subject_light: 0.0,
             frame_res: res,
             fg_tex,
             mask_tex,
@@ -178,8 +182,10 @@ impl GpuCompositor {
             entries: &[
                 tex_binding(0, TEXTURE_FORMAT),
                 sampler_binding(1),
+                tex_binding(2, MASK_FORMAT),
+                sampler_binding(3),
                 wgpu::BindGroupLayoutEntry {
-                    binding: 2,
+                    binding: 4,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
@@ -403,6 +409,10 @@ impl Compositor for GpuCompositor {
         Ok(())
     }
 
+    fn set_subject_light(&mut self, light: f32) {
+        self.subject_light = light.clamp(0.0, 1.0);
+    }
+
     fn composite(
         &mut self,
         source: &FrameBuffer,
@@ -487,6 +497,16 @@ impl Compositor for GpuCompositor {
                             },
                             wgpu::BindGroupEntry {
                                 binding: 2,
+                                resource: wgpu::BindingResource::TextureView(
+                                    &self.mask_tex.create_view(&Default::default()),
+                                ),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 3,
+                                resource: wgpu::BindingResource::Sampler(&sampler),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 4,
                                 resource: wgpu::BindingResource::Buffer(
                                     self.blur_uniform.as_entire_buffer_binding(),
                                 ),
@@ -540,6 +560,16 @@ impl Compositor for GpuCompositor {
                             },
                             wgpu::BindGroupEntry {
                                 binding: 2,
+                                resource: wgpu::BindingResource::TextureView(
+                                    &self.mask_tex.create_view(&Default::default()),
+                                ),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 3,
+                                resource: wgpu::BindingResource::Sampler(&sampler),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 4,
                                 resource: wgpu::BindingResource::Buffer(
                                     self.blur_uniform.as_entire_buffer_binding(),
                                 ),
@@ -599,6 +629,16 @@ impl Compositor for GpuCompositor {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let wrap = if matches!(self.background, Background::Image { .. }) {
+            0.5f32
+        } else {
+            0.0f32
+        };
+        self.queue.write_buffer(
+            &globals,
+            0,
+            bytemuck::cast_slice(&[wrap, self.subject_light, 0.0, 0.0]),
+        );
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("composite bg"),
             layout: &bgl,
@@ -744,5 +784,36 @@ mod tests {
             top > 128 && bottom < 128,
             "vertical orientation broken: top={top} bottom={bottom}"
         );
+
+        // Blur with a sharp subject: foreground pixels (alpha 1, left half)
+        // must be excluded from the kernel so the bright side cannot smear
+        // into the dark background (halo-free, U9.5).
+        let mut src3 = frame(res(32, 24), 255);
+        for row in src3.data.chunks_exact_mut(32 * 3) {
+            for v in row[32 / 2 * 3..].iter_mut() {
+                *v = 0;
+            }
+        }
+        let mut m2 = mask(res(32, 24), 0.0);
+        for y in 0..24usize {
+            for x in 0..16usize {
+                m2.data[y * 32 + x] = 1.0;
+            }
+        }
+        gpu.update_background(BackgroundMode::Blur { radius: 4.0 })
+            .unwrap();
+        gpu.composite(&src3, &m2, &mut out).unwrap();
+        for y in 0..24usize {
+            for x in 18..32usize {
+                let i = (y * 32 + x) * 3;
+                assert_eq!(
+                    &out.data[i..i + 3],
+                    &[0, 0, 0],
+                    "gpu halo at row {y} col {x}"
+                );
+            }
+        }
+        // Subject side stays the source.
+        assert_eq!(&out.data[..3], &[255, 255, 255]);
     }
 }

@@ -14,6 +14,7 @@ use frameiru_core::format::{FrameMetadata, PixelFormat, Resolution};
 use frameiru_core::traits::Segmenter;
 use frameiru_core::FrameBuffer;
 use frameiru_segment::{OnnxConfig, OnnxSegmenter};
+use serial_test::serial;
 
 const FRAME: (u32, u32) = (640, 480);
 
@@ -74,6 +75,7 @@ fn first_edge_row(mask: &Mask, threshold: f32) -> u32 {
 }
 
 #[test]
+#[serial]
 fn mask_orientation_matches_frame() {
     let mut segmenter = load();
     let (w, h) = FRAME;
@@ -98,6 +100,7 @@ fn mask_orientation_matches_frame() {
 }
 
 #[test]
+#[serial]
 fn mask_is_not_horizontally_mirrored() {
     let mut segmenter = load();
     let (w, h) = FRAME;
@@ -133,6 +136,7 @@ fn mask_is_not_horizontally_mirrored() {
 /// and reset to zero on `reset_state`. Run with `FRAMEIRU_TEST_MODEL`
 /// pointing at `rvm_mobilenetv3_fp32.onnx`.
 #[test]
+#[serial]
 fn rvm_state_flow_and_reset() {
     use frameiru_segment::{OnnxConfig, RvmSegmenter};
 
@@ -168,4 +172,32 @@ fn rvm_state_flow_and_reset() {
     assert_eq!(rvm.state_checksum(), 0, "reset zeroes the states");
     // The pipeline keeps segmenting after a reset.
     rvm.segment(&frame).expect("inference after reset");
+}
+
+/// The embedded MediaPipe model must load from the binary and
+/// produce a full-resolution mask in [0, 1] — the zero-setup default path.
+#[test]
+#[serial]
+fn embedded_model_segments_a_frame() {
+    use frameiru_segment::{load_embedded, EMBEDDED_MODEL_INPUT};
+    let config = OnnxConfig::new(EMBEDDED_MODEL_INPUT).unwrap();
+    let mut seg = load_embedded(config).expect("embedded model must load");
+    assert_eq!(seg.input_resolution(), EMBEDDED_MODEL_INPUT);
+    let frame = frame_with_edge(240, (255, 255, 255), (0, 0, 0));
+    let mask = seg.segment(&frame).expect("segment with embedded model (full-frame pass)");
+    assert_eq!(mask.resolution, frame.metadata.resolution);
+    assert_eq!(mask.data.len(), (FRAME.0 * FRAME.1) as usize);
+    assert!(
+        mask.data.iter().all(|&v| (0.0..=1.0).contains(&v)),
+        "mask values must stay in [0, 1]"
+    );
+
+    // Consecutive frame: exercises Dynamic ROI Zoom tracking on the discovered subject
+    let mask2 = seg.segment(&frame).expect("segment with embedded model (roi-zoom pass)");
+    assert_eq!(mask2.resolution, frame.metadata.resolution);
+    assert_eq!(mask2.data.len(), (FRAME.0 * FRAME.1) as usize);
+    assert!(
+        mask2.data.iter().all(|&v| (0.0..=1.0).contains(&v)),
+        "mask values must stay in [0, 1]"
+    );
 }

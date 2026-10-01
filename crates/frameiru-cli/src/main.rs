@@ -34,8 +34,6 @@ enum Command {
     Devices,
     /// Inspect a camera device's formats and resolutions.
     Inspect(commands::DeviceArg),
-    /// Manage ONNX segmentation models.
-    Models(commands::ModelsCmd),
     /// Run an inference/composition benchmark without a video sink.
     Benchmark(commands::BenchArgs),
 }
@@ -56,7 +54,6 @@ fn main() -> anyhow::Result<()> {
         Command::SetBg(args) => commands::control::set_background(args),
         Command::Devices => commands::devices::list_devices(),
         Command::Inspect(args) => commands::devices::inspect(args.device),
-        Command::Models(cmd) => commands::models::models(cmd),
         Command::Benchmark(args) => commands::bench::benchmark(args),
     }
 }

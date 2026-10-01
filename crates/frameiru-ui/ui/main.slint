@@ -1,19 +1,201 @@
-import { Button, ComboBox, HorizontalBox, Slider, VerticalBox } from "std-widgets.slint";
+import { ComboBox, Slider } from "std-widgets.slint";
+
+// Cyberpunk / Neural Reticle Corner Accent
+component ReticleCorner inherits Rectangle {
+    in property <bool> is_top: true;
+    in property <bool> is_left: true;
+    in property <color> bracket_color: #00f0ff;
+    in property <length> bracket_size: 14px;
+    in property <length> thickness: 2px;
+
+    width: root.bracket_size;
+    height: root.bracket_size;
+
+    // Horizontal arm
+    Rectangle {
+        x: root.is_left ? 0 : parent.width - root.bracket_size;
+        y: root.is_top ? 0 : parent.height - root.thickness;
+        width: root.bracket_size;
+        height: root.thickness;
+        background: root.bracket_color;
+    }
+    // Vertical arm
+    Rectangle {
+        x: root.is_left ? 0 : parent.width - root.thickness;
+        y: root.is_top ? 0 : parent.height - root.bracket_size;
+        width: root.thickness;
+        height: root.bracket_size;
+        background: root.bracket_color;
+    }
+}
+
+// Telemetry Badge in Header
+component StatBadge inherits Rectangle {
+    in property <string> label: "";
+    in property <string> value: "";
+    in property <color> value_color: #00f0ff;
+
+    background: #00000066;
+    border-color: #ffffff10;
+    border-width: 1px;
+    border-radius: 4px;
+    height: 24px;
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 5px;
+        alignment: center;
+
+        Text {
+            text: root.label;
+            font-size: 10px;
+            font-weight: 500;
+            color: #64748b;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.value;
+            font-size: 10px;
+            font-weight: 700;
+            color: root.value_color;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Cyberpunk Action Button
+component CyberButton inherits Rectangle {
+    in property <string> text: "";
+    in property <bool> active: false;
+    in property <bool> is_primary: false;
+    in property <bool> is_danger: false;
+    in property <bool> btn_enabled: true;
+    in property <color> dot_color: transparent;
+    in property <bool> show_dot: false;
+    in property <length> btn_min_width: 0px;
+    callback clicked();
+
+    min-width: root.btn_min_width;
+    height: 32px;
+    border-radius: 4px;
+    border-width: 1px;
+
+    // Responsive states
+    background: !root.btn_enabled ? #12151c80 :
+                root.active ? #181b24 :
+                root.is_primary ? #12151c :
+                root.is_danger ? #12151c :
+                touch.has-hover ? #181b24 : #12151c;
+
+    border-color: !root.btn_enabled ? #1f253350 :
+                  root.active ? #00f0ff :
+                  root.is_primary ? #00ff88 :
+                  root.is_danger ? #ff0055 :
+                  touch.has-hover ? #00f0ff80 : #1f2533;
+
+    touch := TouchArea {
+        enabled: root.btn_enabled;
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 6px;
+        alignment: center;
+
+        if root.show_dot: Rectangle {
+            width: 7px;
+            height: 7px;
+            border-radius: 3.5px;
+            background: root.dot_color;
+            y: (parent.height - self.height) / 2;
+        }
+
+        Text {
+            text: root.text;
+            font-size: 11px;
+            font-weight: root.active || root.is_primary ? 700 : 500;
+            color: !root.btn_enabled ? #475569 :
+                   root.active ? #00f0ff :
+                   root.is_primary ? #00ff88 :
+                   root.is_danger ? #ff0055 :
+                   touch.has-hover ? #f8fafc : #cbd5e1;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Color Swatch Button
+component SwatchButton inherits Rectangle {
+    in property <string> text: "";
+    in property <color> swatch_color: #ff0055;
+    in property <color> border_accent: #ff005560;
+    in property <bool> active: false;
+    callback clicked();
+
+    height: 30px;
+    border-radius: 4px;
+    border-width: 1px;
+
+    background: root.active ? #181b24 :
+                touch.has-hover ? #181b24 : #12151c;
+
+    border-color: root.active ? root.swatch_color :
+                  touch.has-hover ? root.swatch_color : root.border_accent;
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 7px;
+        alignment: center;
+
+        Rectangle {
+            width: 8px;
+            height: 8px;
+            border-radius: 4px;
+            background: root.swatch_color;
+            y: (parent.height - self.height) / 2;
+        }
+
+        Text {
+            text: root.text;
+            font-size: 11px;
+            font-weight: root.active ? 700 : 500;
+            color: root.active ? #f8fafc :
+                   touch.has-hover ? #f8fafc : #94a3b8;
+            vertical-alignment: center;
+        }
+    }
+}
 
 export component MainWindow inherits Window {
-    title: "Frameiru";
-    preferred-width: 960px;
-    preferred-height: 680px;
+    title: "Frameiru // Neural Segmentation Studio";
+    preferred-width: 1040px;
+    preferred-height: 760px;
+    min-width: 800px;
+    min-height: 600px;
+    background: #07080a;
 
-    // Preview frame (RGB8 converted by the app) and status line.
+    // Preview frame (RGB8 converted by the app).
     in-out property <image> preview;
-    in-out property <string> status_text: "stopped";
-    // Camera selector; item 0 is always the synthetic mock source.
-    in-out property <[string]> devices: ["(mock)"];
+    in-out property <bool> is_running: false;
+    in-out property <string> error_text: "";
+    // Camera selector
+    in-out property <[string]> devices: ["Mock Camera ((mock))"];
     in-out property <int> selected_device: 0;
-    // Background controls.
+    // Background controls
     in-out property <float> blur_radius: 8;
-    in-out property <string> model_name: "none";
+    in-out property <string> model_name: "Fusion: MediaPipe + RVM (embedded)";
+    in-out property <string> active_effect: "blur";
+    // Live telemetry
+    in-out property <string> fps_text: "0.0";
+    in-out property <string> latency_text: "0.0ms";
 
     callback start_pipeline();
     callback stop_pipeline();
@@ -23,76 +205,512 @@ export component MainWindow inherits Window {
     callback set_color(string);
     callback pick_image();
 
-    VerticalBox {
-        HorizontalBox {
-            Text { text: "Frameiru"; font-size: 22px; font-weight: 700; }
-            Text { text: status_text; }
-        }
+    // Chassis Container
+    Rectangle {
+        x: 12px;
+        y: 12px;
+        width: parent.width - 24px;
+        height: parent.height - 24px;
+        background: #0c0d12;
+        border-color: #1f2533;
+        border-width: 1px;
+        border-radius: 10px;
+        clip: true;
 
-        HorizontalBox {
-            Image {
-                source: preview;
-                width: 640px;
-                height: 480px;
-            }
-        }
+        VerticalLayout {
+            // ==========================================
+            // TITLEBAR / HEADER
+            // ==========================================
+            Rectangle {
+                height: 42px;
+                background: #12151c;
+                border-color: #1f2533;
+                border-width: 1px;
 
-        HorizontalBox {
-            ComboBox {
-                model: devices;
-                current-index: selected_device;
-                selected(v) => {
-                    device_selected(v);
+                HorizontalLayout {
+                    padding-left: 14px;
+                    padding-right: 14px;
+                    padding-top: 0px;
+                    padding-bottom: 0px;
+                    alignment: space-between;
+
+                    // Left Branding & Status (vertically centered)
+                    VerticalLayout {
+                        alignment: center;
+                        HorizontalLayout {
+                            spacing: 10px;
+                            alignment: start;
+
+                            // Engine Status Dot
+                            Rectangle {
+                                width: 10px;
+                                height: 10px;
+                                border-radius: 5px;
+                                background: root.is_running ? #00ff88 : #ff0055;
+                                y: (parent.height - self.height) / 2;
+                            }
+
+                            // App Title
+                            Text {
+                                text: "FRAMEIRU";
+                                font-size: 13px;
+                                font-weight: 800;
+                                letter-spacing: 1.5px;
+                                color: #00f0ff;
+                                vertical-alignment: center;
+                            }
+
+                            // Version Pill
+                            Rectangle {
+                                background: #181b24;
+                                border-color: #1f2533;
+                                border-width: 1px;
+                                border-radius: 3px;
+                                height: 18px;
+                                y: (parent.height - self.height) / 2;
+
+                                HorizontalLayout {
+                                    padding-left: 6px;
+                                    padding-right: 6px;
+                                    Text {
+                                        text: "NEURAL_v0.1";
+                                        font-size: 9px;
+                                        font-weight: 600;
+                                        color: #94a3b8;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            // Engine State Label
+                            Text {
+                                text: root.is_running ? "● ENGINE RUNNING" : "● ENGINE IDLE";
+                                font-size: 11px;
+                                font-weight: 600;
+                                color: root.is_running ? #00ff88 : #64748b;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Right Telemetry Badges (vertically centered)
+                    VerticalLayout {
+                        alignment: center;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: end;
+
+                            StatBadge {
+                                label: "FPS:";
+                                value: root.fps_text;
+                                value_color: #00f0ff;
+                            }
+                            StatBadge {
+                                label: "LATENCY:";
+                                value: root.latency_text;
+                                value_color: #00ff88;
+                            }
+                            StatBadge {
+                                label: "CADENCE:";
+                                value: "30 FPS";
+                                value_color: #ffb703;
+                            }
+                        }
+                    }
                 }
             }
-            Button {
-                text: "Start";
-                clicked => { start_pipeline(); }
-            }
-            Button {
-                text: "Stop";
-                clicked => { stop_pipeline(); }
-            }
-        }
 
-        HorizontalBox {
-            Button {
-                text: "Passthrough";
-                clicked => { set_passthrough(); }
-            }
-            Button {
-                text: "Blur";
-                clicked => { set_blur(blur_radius); }
-            }
-            Slider {
-                minimum: 1;
-                maximum: 30;
-                value: blur_radius;
-                changed(v) => { blur_radius = v; }
-            }
-            Button {
-                text: "Image...";
-                clicked => { pick_image(); }
-            }
-        }
+            // ==========================================
+            // LIVE CAMERA FEED VIEWPORT
+            // ==========================================
+            Rectangle {
+                background: #090b10;
+                border-color: #1f2533;
+                border-width: 1px;
+                vertical-stretch: 1;
+                clip: true;
 
-        HorizontalBox {
-            Button {
-                text: "Red";
-                clicked => { set_color("#e53935"); }
-            }
-            Button {
-                text: "Green";
-                clicked => { set_color("#43a047"); }
-            }
-            Button {
-                text: "Blue";
-                clicked => { set_color("#1e88e5"); }
-            }
-        }
+                // Live Camera Image (when running)
+                if root.is_running: Image {
+                    source: root.preview;
+                    image-fit: contain;
+                    width: 100%;
+                    height: 100%;
+                }
 
-        HorizontalBox {
-            Text { text: "model: " + model_name; }
+                // Inactive / Offline Viewport Placeholder
+                if !root.is_running: Rectangle {
+                    width: 100%;
+                    height: 100%;
+
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 12px;
+
+                        // Offline Hexagon / Reticle Icon
+                        Rectangle {
+                            width: 54px;
+                            height: 54px;
+                            border-radius: 27px;
+                            border-color: #00f0ff40;
+                            border-width: 2px;
+                            background: #12151c;
+                            HorizontalLayout {
+                                alignment: center;
+                                Text {
+                                    text: "⬡";
+                                    font-size: 26px;
+                                    color: #00f0ff;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: "NEURAL SENSOR OFFLINE";
+                            font-size: 15px;
+                            font-weight: 700;
+                            letter-spacing: 2px;
+                            color: #94a3b8;
+                            horizontal-alignment: center;
+                        }
+
+                        Text {
+                            text: root.error_text != "" ? root.error_text : "SELECT DEVICE BELOW AND ENGAGE ENGINE [START]";
+                            font-size: 11px;
+                            color: root.error_text != "" ? #ff0055 : #475569;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+
+                // Corner Reticles (Top-Left, Top-Right, Bottom-Left, Bottom-Right)
+                ReticleCorner { x: 12px; y: 12px; is_top: true; is_left: true; }
+                ReticleCorner { x: parent.width - 26px; y: 12px; is_top: true; is_left: false; }
+                ReticleCorner { x: 12px; y: parent.height - 26px; is_top: false; is_left: true; }
+                ReticleCorner { x: parent.width - 26px; y: parent.height - 26px; is_top: false; is_left: false; }
+
+                // Top HUD Overlay Telemetry
+                Rectangle {
+                    x: 16px;
+                    y: 16px;
+                    width: parent.width - 32px;
+                    height: 28px;
+                    background: transparent;
+
+                    HorizontalLayout {
+                        alignment: space-between;
+
+                        // Live status pill
+                        Rectangle {
+                            background: #07080ae0;
+                            border-color: root.is_running ? #00f0ff50 : #1f2533;
+                            border-width: 1px;
+                            border-radius: 4px;
+                            height: 26px;
+
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 8px;
+                                spacing: 6px;
+
+                                Rectangle {
+                                    width: 6px;
+                                    height: 6px;
+                                    border-radius: 3px;
+                                    background: root.is_running ? #ff0055 : #475569;
+                                    y: (parent.height - self.height) / 2;
+                                }
+                                Text {
+                                    text: root.is_running ? "LIVE FEED" : "STANDBY";
+                                    font-size: 10px;
+                                    font-weight: 700;
+                                    color: root.is_running ? #f8fafc : #64748b;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        // Model Status Badge
+                        Rectangle {
+                            background: #07080ae0;
+                            border-color: #1f2533;
+                            border-width: 1px;
+                            border-radius: 4px;
+                            height: 26px;
+
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 8px;
+                                spacing: 6px;
+
+                                Text {
+                                    text: "MATTE ENGINE:";
+                                    font-size: 10px;
+                                    color: #64748b;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: root.is_running ? "FUSION [MP+RVM] ACTIVE" : "STANDBY";
+                                    font-size: 10px;
+                                    font-weight: 700;
+                                    color: root.is_running ? #00ff88 : #64748b;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ==========================================
+            // CONTROL DECK / FOOTER PANEL
+            // ==========================================
+            Rectangle {
+                background: #0c0d12;
+                border-color: #1f2533;
+                border-width: 1px;
+
+                VerticalLayout {
+                    padding: 14px;
+                    spacing: 12px;
+
+                    // Row 1: Device Selector & Master Controls
+                    HorizontalLayout {
+                        spacing: 12px;
+
+                        Text {
+                            text: "DEVICE:";
+                            font-size: 11px;
+                            font-weight: 700;
+                            letter-spacing: 1px;
+                            color: #00f0ff;
+                            vertical-alignment: center;
+                        }
+
+                        ComboBox {
+                            model: root.devices;
+                            current-index <=> root.selected_device;
+                            enabled: !root.is_running;
+                            horizontal-stretch: 1;
+                            selected(v) => {
+                                root.device_selected(v);
+                            }
+                        }
+
+                        CyberButton {
+                            text: root.is_running ? "STOP" : "START";
+                            btn_min_width: 88px;
+                            is_primary: !root.is_running;
+                            is_danger: root.is_running;
+                            show_dot: true;
+                            dot_color: root.is_running ? #ff0055 : #00ff88;
+                            clicked => {
+                                if root.is_running {
+                                    root.stop_pipeline();
+                                } else {
+                                    root.start_pipeline();
+                                }
+                            }
+                        }
+                    }
+
+                    // Row 2: Effect Mode & Blur Slider
+                    HorizontalLayout {
+                        spacing: 12px;
+
+                        Text {
+                            text: "EFFECT:";
+                            font-size: 11px;
+                            font-weight: 700;
+                            letter-spacing: 1px;
+                            color: #00f0ff;
+                            vertical-alignment: center;
+                        }
+
+                        CyberButton {
+                            text: "Passthrough";
+                            active: root.active_effect == "passthrough";
+                            clicked => {
+                                root.active_effect = "passthrough";
+                                root.set_passthrough();
+                            }
+                        }
+
+                        CyberButton {
+                            text: "Blur (" + round(root.blur_radius) + "px)";
+                            active: root.active_effect == "blur";
+                            clicked => {
+                                root.active_effect = "blur";
+                                root.set_blur(root.blur_radius);
+                            }
+                        }
+
+                        // Blur Slider
+                        Rectangle {
+                            background: #12151c;
+                            border-color: #1f2533;
+                            border-width: 1px;
+                            border-radius: 4px;
+                            horizontal-stretch: 1;
+                            height: 32px;
+
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                spacing: 8px;
+
+                                Text {
+                                    text: "0px";
+                                    font-size: 10px;
+                                    color: #64748b;
+                                    vertical-alignment: center;
+                                }
+
+                                Slider {
+                                    minimum: 1;
+                                    maximum: 30;
+                                    value <=> root.blur_radius;
+                                    horizontal-stretch: 1;
+                                    changed(v) => {
+                                        root.active_effect = "blur";
+                                        root.set_blur(v);
+                                    }
+                                }
+
+                                Text {
+                                    text: round(root.blur_radius) + "px";
+                                    font-size: 10px;
+                                    font-weight: 700;
+                                    color: #00f0ff;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        CyberButton {
+                            text: "Virtual Image...";
+                            active: root.active_effect == "image";
+                            clicked => {
+                                root.active_effect = "image";
+                                root.pick_image();
+                            }
+                        }
+                    }
+
+                    // Row 3: Solid Colors
+                    HorizontalLayout {
+                        spacing: 12px;
+
+                        Text {
+                            text: "SOLID COLOR:";
+                            font-size: 11px;
+                            font-weight: 700;
+                            letter-spacing: 1px;
+                            color: #00f0ff;
+                            vertical-alignment: center;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            horizontal-stretch: 1;
+
+                            SwatchButton {
+                                text: "Red";
+                                swatch_color: #dc2626;
+                                border_accent: #dc262640;
+                                active: root.active_effect == "color_red";
+                                clicked => {
+                                    root.active_effect = "color_red";
+                                    root.set_color("#dc2626");
+                                }
+                            }
+
+                            SwatchButton {
+                                text: "Green";
+                                swatch_color: #10b981;
+                                border_accent: #10b98140;
+                                active: root.active_effect == "color_green";
+                                clicked => {
+                                    root.active_effect = "color_green";
+                                    root.set_color("#10b981");
+                                }
+                            }
+
+                            SwatchButton {
+                                text: "Blue";
+                                swatch_color: #2563eb;
+                                border_accent: #2563eb40;
+                                active: root.active_effect == "color_blue";
+                                clicked => {
+                                    root.active_effect = "color_blue";
+                                    root.set_color("#2563eb");
+                                }
+                            }
+
+                            SwatchButton {
+                                text: "Dark";
+                                swatch_color: #0f172a;
+                                border_accent: #334155;
+                                active: root.active_effect == "color_dark";
+                                clicked => {
+                                    root.active_effect = "color_dark";
+                                    root.set_color("#0f172a");
+                                }
+                            }
+                        }
+                    }
+
+                    // Row 4: Status Telemetry Footer
+                    HorizontalLayout {
+                        alignment: space-between;
+
+                        HorizontalLayout {
+                            spacing: 6px;
+                            Text {
+                                text: "Model:";
+                                font-size: 10px;
+                                color: #00f0ff;
+                            }
+                            Text {
+                                text: root.model_name;
+                                font-size: 10px;
+                                color: #94a3b8;
+                            }
+                            Text {
+                                text: "|";
+                                font-size: 10px;
+                                color: #334155;
+                            }
+                            Text {
+                                text: "Backend: ONNX Runtime (CPU/GPU)";
+                                font-size: 10px;
+                                color: #64748b;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 6px;
+                            Text {
+                                text: "UVC_STABLE";
+                                font-size: 10px;
+                                font-weight: 600;
+                                color: #00f0ff;
+                            }
+                            Text {
+                                text: "|";
+                                font-size: 10px;
+                                color: #334155;
+                            }
+                            Text {
+                                text: "30 FPS ENGINE";
+                                font-size: 10px;
+                                color: #64748b;
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

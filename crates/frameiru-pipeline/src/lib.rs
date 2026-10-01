@@ -8,6 +8,7 @@
 mod config;
 mod engine;
 mod metrics;
+mod motion;
 mod runner;
 
 pub use config::PipelineConfig;

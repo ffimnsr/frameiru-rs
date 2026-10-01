@@ -11,6 +11,9 @@ pub struct MetricsSnapshot {
     pub frames_captured: u64,
     /// Frames composited and written to the sink.
     pub frames_composited: u64,
+    /// Frames written to the sink by reusing the previous composite (scene
+    /// idle, U9.6 gating) — compositing was skipped.
+    pub composites_skipped: u64,
     /// Frames dropped due to channel saturation (newest dropped).
     pub frames_dropped: u64,
     /// Successful mask computations (the async inference rate).
@@ -30,6 +33,7 @@ pub struct MetricsSnapshot {
 pub struct Metrics {
     captured: AtomicU64,
     composited: AtomicU64,
+    composites_skipped: AtomicU64,
     dropped: AtomicU64,
     mask_errors: AtomicU64,
     masks_computed: AtomicU64,
@@ -49,6 +53,7 @@ impl Metrics {
         Self {
             captured: AtomicU64::new(0),
             composited: AtomicU64::new(0),
+            composites_skipped: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
             mask_errors: AtomicU64::new(0),
             masks_computed: AtomicU64::new(0),
@@ -65,6 +70,12 @@ impl Metrics {
 
     pub fn on_drop(&self) {
         self.dropped.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Records a composite that was skipped (idle frame, previous output
+    /// reused) but still written to the sink.
+    pub fn on_composite_skip(&self) {
+        self.composites_skipped.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn on_composite(&self) {
@@ -91,6 +102,7 @@ impl Metrics {
         MetricsSnapshot {
             frames_captured: self.captured.load(Ordering::Relaxed),
             frames_composited: self.composited.load(Ordering::Relaxed),
+            composites_skipped: self.composites_skipped.load(Ordering::Relaxed),
             frames_dropped: self.dropped.load(Ordering::Relaxed),
             masks_computed: self.masks_computed.load(Ordering::Relaxed),
             mask_errors: self.mask_errors.load(Ordering::Relaxed),

@@ -34,25 +34,26 @@ read back `/dev/video10` as a capture source → assert resolution/format.
 ```sh
 cargo build --release -p frameiru-cli --features full
 
-# Grab a model first (no account needed):
-frameiru-cli models list          # silueta (42 MB, 320x320) is the default
-frameiru-cli models download      # -> models/silueta.onnx
-
-# Foreground, with segmentation model:
-frameiru-cli run --model models/silueta.onnx --input-size 320x320 \
-    --background blur:8 --socket /tmp/frameiru.sock
+# No model needed: the MediaPipe selfie-landscape model is embedded in the
+# binary (256x144, ~2.9 ms/mask measured). Just run:
+frameiru-cli run --background blur:8 --socket /tmp/frameiru.sock
 
 # Or as a daemon:
-frameiru-cli start --model models/silueta.onnx
+frameiru-cli start
 frameiru-cli status
 frameiru-cli set-bg color:0,120,0
 frameiru-cli stop
+
+# External ONNX models still work via --model (must match input-size and
+# normalization):
+frameiru-cli run --model /path/to/rvm_mobilenetv3_fp32.onnx \
+    --input-size 256x256 --background blur:8
 ```
 
-All `models download` entries are rembg GitHub release assets — direct
-links, no Hugging Face account. RMBG-2.0's HF repo is gated; a 976 MB
-mirror is listed as `rmbg-2.0`. Match `--input-size` to the model:
-`320x320` for silueta/u2net, `1024x1024` for isnet/BiRefNet/rmbg-2.0.
+The embedded default is MediaPipe Selfie Segmentation landscape (256x144,
+unit normalization). External models default to imagenet normalization; RVM
+(u2net family) needs `--input-size` matching the graph (256x256 for RVM,
+320x320 for silueta/u2net, 1024x1024 for isnet/BiRefNet/rmbg-2.0).
 
 ## 3. Video consumer check
 

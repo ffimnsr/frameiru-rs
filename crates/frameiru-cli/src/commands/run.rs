@@ -28,6 +28,8 @@ pub fn run(args: RunArgs) -> anyhow::Result<()> {
         PipelineConfig {
             max_fps: args.max_fps,
             mask_alpha: super::parse_mask_alpha(&args.mask_alpha)?,
+            infer_max_fps: args.infer_fps,
+            subject_light: super::parse_subject_light(&args.subject_light)?,
             ..Default::default()
         },
         source,
@@ -161,22 +163,48 @@ fn build_source(args: &RunArgs) -> anyhow::Result<Box<dyn FrameSource>> {
 }
 
 fn build_segmenter(args: &RunArgs) -> anyhow::Result<Option<Box<dyn Segmenter>>> {
-    let Some(path) = &args.model else {
-        return Ok(None);
-    };
     #[cfg(feature = "onnx")]
     {
-        let input_size = super::parse_resolution(&args.input_size)?;
-        let mut config = frameiru_segment::OnnxConfig::new(input_size)?;
-        config.normalization = super::parse_normalization(&args.normalization)?;
-        let segmenter = frameiru_segment::load_model(path, config)
-            .with_context(|| format!("cannot load model {}", path.display()))?;
-        Ok(Some(segmenter))
+        use frameiru_segment::{load_embedded, load_model, OnnxConfig, EMBEDDED_MODEL_INPUT};
+        let mut config = match &args.model {
+            Some(path) => {
+                let input_size = super::parse_resolution(&args.input_size)?;
+                let mut config = OnnxConfig::new(input_size)?;
+                config.normalization = super::parse_normalization(&args.normalization)?;
+                config.mask_dilate = args.mask_dilate;
+                config.mask_contrast = super::parse_mask_contrast(&args.mask_contrast)?;
+                if args.threads == Some(0) {
+                    anyhow::bail!("--threads must be >= 1 (omit it for the physical-core default)");
+                }
+                config.intra_threads = args.threads;
+                let segmenter = load_model(path, config)?;
+                return Ok(Some(segmenter));
+            }
+            // No `--model`: the embedded fusion model (MediaPipe + RVM) ships in the
+            // binary (256x256, imagenet normalization) — zero-setup masks.
+            None => {
+                let mut config = OnnxConfig::new(EMBEDDED_MODEL_INPUT)?;
+                config.normalization = frameiru_segment::embedded_normalization();
+                config
+            }
+        };
+        if args.threads == Some(0) {
+            anyhow::bail!("--threads must be >= 1 (omit it for the physical-core default)");
+        }
+        config.intra_threads = args.threads;
+        config.refine_mask = !args.no_refine_mask;
+        config.mask_dilate = args.mask_dilate;
+        config.mask_contrast = super::parse_mask_contrast(&args.mask_contrast)?;
+        Ok(Some(load_embedded(config)?))
     }
     #[cfg(not(feature = "onnx"))]
     {
-        let _ = path;
-        bail!("segmentation needs the `onnx` feature; rebuild with `cargo build --features onnx`")
+        if args.model.is_some() {
+            bail!(
+                "segmentation needs the `onnx` feature; rebuild with `cargo build --features onnx`"
+            )
+        }
+        Ok(None)
     }
 }
 

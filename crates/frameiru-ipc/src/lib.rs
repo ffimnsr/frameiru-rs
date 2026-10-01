@@ -51,6 +51,7 @@ mod tests {
                 capture_fps: 10.0,
                 composite_fps: 9.0,
                 frames_composited: 7,
+                composites_skipped: 2,
                 masks_computed: 7,
                 latency_us: 3,
                 background: self.background.lock().unwrap().clone(),

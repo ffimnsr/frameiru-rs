@@ -513,8 +513,8 @@ mid-range CPUs by switching model + SIMD + edge-aware upsampling.
   - measured: **32.3 masks/s fp32** on this machine (~2x RVM; int8 was
   slower here at 22.9 — AMD MLAS int8 kernels). Uses `--normalization unit`
   (plain v/255), auto-detected as single-input
-  - registry entry pending: user-supplied mirror URL (`sample_models/`
-  files came from an external source not yet in the registry)
+  - landscape export later measured **2.9 ms/mask (~180 masks/s)** — the
+  most interesting variant, became the embedded default (see below)
 - [x] Stateful segmenter support: `Segmenter::reset_state` (default no-op),
   `RvmSegmenter` feeding recurrent tensors frame→frame, auto-detected by
   `load_model` (>= 5 inputs); pipeline resets state when capture frames drop
@@ -539,39 +539,101 @@ mid-range CPUs by switching model + SIMD + edge-aware upsampling.
   — release **0.33 ms** vs 19.7 ms debug, so debug builds keep the fused
   scalar sampler (`cfg!(debug_assertions)`); release MediaPipe inference
   now **~135-141 masks/s** (7 ms/mask)
-- [ ] (Future) NV12 capture negotiation: many webcams expose NV12 (lighter on
-  USB bandwidth); convert via the `yuv` crate's `yuv_nv12_to_rgb` — the
-  crate's fastest path. RGB→YUYV encoding stays single-pass ours (the
-  crate needs two hops through planar YUV422)
+- [x] NV12 capture negotiation: negotiation now prefers NV12 → YUYV → MJPG;
+  decode via `yuv::yuv_nv12_to_rgb` (BT.601 limited, `Balanced`), odd dims
+  rejected. Caveat: user's Anker PowerConf C200 exposes only MJPG/YUYV/H264
+  (verified via `inspect`) — capability is generic, no speedup on that cam
+  until a NV12 cam is used
 
 ### U9.4 Edge-aware mask upsampling (quality)
-- [ ] Replace bilinear upscale in `postprocess_mask` with a **Guided Filter**
-  (O(n), edge-preserving, uses the full-res RGB frame as guidance) — kills
-  the blocky/haloed matte edge without a brute-force joint bilateral filter
-- [ ] wgpu compute-shader version with CPU fallback (low-spec / headless)
-- [ ] Regression test: mask edge must follow a sharp RGB boundary after
-  upsampling (extend existing orientation/geometry tests)
+- [x] Guided Filter (He et al. 2013) replaces plain bilinear upscale in
+  `postprocess_mask_refined`: O(N) separable box filter (f64 running sums,
+  clamp padding), luma guidance from the full-res frame; soft matte edges
+  snap to sharp RGB boundaries with no texture bleed. Fast-GF subsampling
+  (s=4: solve a/b on a 4x4 lattice, SIMD bilinear `fast_image_resize`
+  upsample) keeps it at **~2.8 ms at 640x480** release (was 15 ms exact,
+  2.3 ms/box scalar). Radius 8 / eps 1e-3; `--no-refine-mask` escapes;
+  `bench` keeps refinement off so masks/s gates raw model throughput
+- [ ] wgpu compute-shader version — CPU fast-GF done (low-spec/headless
+  covered); GPU path deferred until a CUDA GPGPU stack is viable
+- [x] Regression tests: mask edge must follow a sharp RGB boundary after
+  upsampling (guided_filter + postprocess paths: crossing moves toward the
+  boundary and sharpens), flat masks immune to guidance texture, fast path
+  within 0.1 of exact, radius-0 identity, input validation
 
 ### U9.5 Halo-free rendering (quality)
-- [ ] CoC-weighted separable blur in WGSL: blur radius proportional to
-  inverted alpha per pixel; foreground pixels (alpha > 0.5) excluded from
-  the kernel — removes halo artifacts in `blur:` mode (replaces the plain
-  box blur)
-- [ ] Light wrapping for `image:` backgrounds: spill background colors over
-  subject edges for a natural composite
+- [x] Foreground-aware separable blur replaces the plain box blur in `blur:`
+  mode — kernel samples weighted by `1 - alpha`, foreground pixels
+  (alpha >= 0.5) excluded entirely, so bright subject colors cannot smear
+  across the matte edge (the halo). CPU: sliding weighted window (f32 sums,
+  fully-foreground windows fall back to the center sample); GPU: same math
+  in WGSL (`BLUR_WGSL` now binds the mask texture, weight fn per sample).
+  Zero mask degenerates to the old box blur bit-for-bit. Regression tests
+  (CPU + GPU): sharp subject over bright/dark step -> background side stays
+  pure dark, subject side untouched
+- [x] Light wrapping for `image:` backgrounds: spill the background color
+  over the subject edge — effective alpha `0.5*m*(1+m)` (wrap strength 0.5,
+  zero at alpha 0/1), CPU blend + WGSL `globals.g.x`. Tests: alpha 0.5 over
+  blue bg pulls red from 128 down to 96; alpha 0/1 stay exact
 
 ### U9.6 Inference orchestration & thermals
-- [ ] Cap ORT intra-op threads (CLI `--threads`, default = physical cores);
-  research: 2-4 pinned threads often beat all-logical-cores for latency and
-  thermals on constrained CPUs
-- [ ] Quantized variants (fp16/int8) in the model registry once fp16 mask
-  rendering + validation exist
+- [x] ORT intra-op thread cap: `OnnxConfig.intra_threads`, CLI `--threads` on
+  `run` and `benchmark`; default pins to the **physical** core count (sysfs
+  `(package, core)` pairs on Linux, logical-parallelism fallback). `0` is
+  rejected with a clear error. Measured on 5600X (12 logical / 6 physical),
+  MediaPipe 256x256 release: 2t = 141.6, 4t = 153.1, 6t default = 149.4,
+  12t = 149.1 masks/s — small models barely care about threads, and the
+  physical default matches the best without SMT contention/thermals
+- [x] Quantized variants in the model registry: `rmbg-2.0-uint8` (366 MB vs
+  976 MB fp32; QDQ u8, ort CPU-EP validated — byte-identical to BRIA's
+  `model_uint8`/`model_quantized`, public no-auth mirror). Measured on
+  5600X at 1024px input: **~15 s/mask uint8, ~20 s/mask int8** — photo
+  batch use only, not live video. fp16 variants deferred: ort CPU EP has
+  no fp16 GEMM kernels, and int4 q4/q4f16 QDQ support is unreliable in
+  prebuilt runtime
 - [ ] OpenVINO EP for Intel iGPU users: documented, gated behind a custom
   ORT build (`download-binaries` ships no OpenVINO prebuilt). AMD ROCm is
   dropped for Polaris-era GPUs — no GPU inference path for them; Vulkan EP
   unsupported by prebuilt ORT
 - [x] Frame-rate capping exists (`--max-fps`); keep inference sampling
   decoupled (async mask slot) — no change needed
+
+### U9.8 Motion-aware gating & high-res refine (beyond the U9.6 plan)
+Measured driver: MediaPipe selfie = 4.5 ms/mask at 256x256 fp32
+(int8 QDQ is 3.5x SLOWER on CPU — per-op dequant overhead on depthwise
+convs), landscape 256x144 = 2.9 ms. At 1080p the guided refine (~12 ms
+full-res) becomes the bottleneck, and idle webcam scenes waste both
+inference and compositing.
+- [x] **Inference cadence gating** (`--infer-fps`, default 15, 0 = every
+  frame): 32x24-cell luma signature (0.03 ms), static scenes skip
+  segmentation, motion overrides the cap at half the interval. Benchmark
+  runs uncapped so masks/s stays the raw model gate
+- [x] **Idle compose reuse**: when frame signature, mask Arc, and background
+  are all unchanged (Blur/Image modes only), the previous composite is
+  re-sent to the sink — llvmpipe blur work goes to ~0 on static scenes.
+  `status` shows `(N reused)`
+- [x] **Half-res refine above 640x480**: fused 2x2-block luma pass, guided
+  filter at half res, SIMD bilinear back up (~4x cheaper at 1080p; edges
+  land within ~1px — the matte comes from a coarse model mask anyway)
+- [x] Registry entries replaced by the **embedded default**: the MediaPipe
+  selfie **landscape** ONNX (256x144, 462 KB, Apache-2.0) ships inside the
+  binary (`include_bytes!`, `load_embedded`) — zero-setup masks, no
+  download step, no external file. `--model <path>` still loads any ONNX.
+  `models download` command removed (registry gone); `benchmark` defaults
+  to the embedded model too
+- [x] Mask polish for missed-edge leakage: 3x3 **dilation** (default 1 px,
+  `--mask-dilate`) grows the subject so under-masked background regions
+  cannot show sharp source pixels, a matching **feather** box blur restores
+  the soft transition band (plain dilation alone hardens the edge into an
+  unblurred ring), and a **soft threshold** (`smoothstep`, `--mask-contrast`
+  default 0.4) collapses ghosting mid-alphas toward 0/1.
+  ~0.5-0.8 ms at 640x480; bench excludes polish so masks/s stays the raw
+  model gate
+- [x] Subject fill light (`--subject-light <0|1..1>`): masked foreground is
+  lifted toward white by `+ light * mask * (255 - out)` per channel — the
+  person looks lit, background untouched. CPU + WGSL (uniform g.y), wired
+  via `Compositor::set_subject_light` (default no-op for custom
+  compositors)
 
 ### U9.7 Acceptance criteria
 - [ ] Masks at ≥ 15/s on a mid-range CPU (MediaPipe) and ≥ 30/s (RVM) at

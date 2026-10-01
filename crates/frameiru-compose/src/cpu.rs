@@ -18,6 +18,9 @@ use crate::mode::Background;
 /// CPU fallback compositor.
 pub struct CpuCompositor {
     background: Background,
+    /// Subject fill light in [0, 1]; 0 disables (see
+    /// [`Compositor::set_subject_light`]).
+    subject_light: f32,
     /// Horizontal blur pass scratch (one allocation for the compositor's life).
     scratch: Vec<u8>,
 }
@@ -26,6 +29,7 @@ impl CpuCompositor {
     pub fn new() -> Self {
         Self {
             background: Background::Passthrough,
+            subject_light: 0.0,
             scratch: Vec::new(),
         }
     }
@@ -45,6 +49,10 @@ impl Compositor for CpuCompositor {
     fn update_background(&mut self, mode: BackgroundMode) -> Result<(), FrameiruError> {
         self.background = Background::resolve(mode)?;
         Ok(())
+    }
+
+    fn set_subject_light(&mut self, light: f32) {
+        self.subject_light = light.clamp(0.0, 1.0);
     }
 
     fn composite(
@@ -86,18 +94,35 @@ impl Compositor for CpuCompositor {
                 if self.scratch.len() < area * 3 {
                     self.scratch.resize(area * 3, 0);
                 }
-                blur_rgb8(
+                blur_rgb8_masked(
                     &source.data[..area * 3],
+                    mask,
                     w,
                     h,
                     *radius,
                     &mut self.scratch,
                     &mut output.data,
                 );
-                blend(&self.scratch, &source.data, mask, w, &mut output.data);
+                blend(
+                    &self.scratch,
+                    &source.data,
+                    mask,
+                    w,
+                    self.subject_light,
+                    &mut output.data,
+                );
             }
             Background::Color { r, g, b } => {
-                blend_color(&source.data, mask, w, *r, *g, *b, &mut output.data);
+                blend_color(
+                    &source.data,
+                    mask,
+                    w,
+                    self.subject_light,
+                    *r,
+                    *g,
+                    *b,
+                    &mut output.data,
+                );
             }
             Background::Image { data, resolution } => {
                 blend_image(
@@ -105,6 +130,7 @@ impl Compositor for CpuCompositor {
                     mask,
                     w,
                     h,
+                    self.subject_light,
                     data,
                     *resolution,
                     &mut output.data,
@@ -115,44 +141,52 @@ impl Compositor for CpuCompositor {
     }
 }
 
-/// `out = mask * fg + (1 - mask) * bg` for a precomputed `bg` buffer.
-fn blend(bg: &[u8], fg: &[u8], mask: &Mask, w: usize, out: &mut [u8]) {
+/// `out = mask * fg + (1 - mask) * bg` for a precomputed `bg` buffer, then a
+/// masked fill-light lift: `+ light * mask * (255 - out)`.
+fn blend(bg: &[u8], fg: &[u8], mask: &Mask, w: usize, light: f32, out: &mut [u8]) {
     out.par_chunks_mut(w * 3).enumerate().for_each(|(y, row)| {
         let base = y * w;
         for x in 0..w {
             let i = (base + x) * 3;
             let m = mask.data[base + x];
+            let lm = light * m;
             for c in 0..3 {
                 let f = fg[i + c] as f32;
                 let b = bg[i + c] as f32;
-                row[x * 3 + c] = (m * f + (1.0 - m) * b).round() as u8;
+                let v = m * f + (1.0 - m) * b;
+                row[x * 3 + c] = (v + lm * (255.0 - v)).round() as u8;
             }
         }
     });
 }
 
 /// Solid-color variant of the blend (no background buffer needed).
-fn blend_color(fg: &[u8], mask: &Mask, w: usize, r: u8, g: u8, b: u8, out: &mut [u8]) {
+#[allow(clippy::too_many_arguments)]
+fn blend_color(fg: &[u8], mask: &Mask, w: usize, light: f32, r: u8, g: u8, b: u8, out: &mut [u8]) {
     let bg = [r as f32, g as f32, b as f32];
     out.par_chunks_mut(w * 3).enumerate().for_each(|(y, row)| {
         let base = y * w;
         for x in 0..w {
             let i = (base + x) * 3;
             let m = mask.data[base + x];
+            let lm = light * m;
             for c in 0..3 {
                 let f = fg[i + c] as f32;
-                row[x * 3 + c] = (m * f + (1.0 - m) * bg[c]).round() as u8;
+                let v = m * f + (1.0 - m) * bg[c];
+                row[x * 3 + c] = (v + lm * (255.0 - v)).round() as u8;
             }
         }
     });
 }
 
 /// Bilinear-sampled image background stretched to the frame.
+#[allow(clippy::too_many_arguments)]
 fn blend_image(
     fg: &[u8],
     mask: &Mask,
     w: usize,
     h: usize,
+    light: f32,
     img: &[u8],
     img_res: Resolution,
     out: &mut [u8],
@@ -186,20 +220,40 @@ fn blend_image(
             let sx = sx.clamp(0.0, (iw - 1) as f32);
             let bg = sample(sx, sy);
             let m = mask.data[y * w + x];
+            // Light wrap (U9.5): spill the background color over the subject
+            // edge — effective alpha `m*(1 - wrap)` where wrap = 0.5*(1 - m),
+            // i.e. `0.5*m*(1 + m)`; at m == 0/1 this is the plain blend.
+            let eff = 0.5 * m * (1.0 + m);
+            let lm = light * m;
             for c in 0..3 {
                 let f = fg[(y * w + x) * 3 + c] as f32;
-                row[x * 3 + c] = (m * f + (1.0 - m) * bg[c]).round() as u8;
+                let v = eff * f + (1.0 - eff) * bg[c];
+                row[x * 3 + c] = (v + lm * (255.0 - v)).round() as u8;
             }
         }
     });
 }
 
-/// Separable sliding-window box blur (two passes).
-fn blur_rgb8(src: &[u8], w: usize, h: usize, radius: u32, scratch: &mut [u8], out: &mut [u8]) {
+/// Foreground-aware separable sliding-window blur (two passes).
+///
+/// Kernel samples are weighted by `1 - alpha` and foreground pixels
+/// (alpha >= 0.5) are excluded entirely, so bright subject colors cannot
+/// smear over the matte edge into the background — halo-free (U9.5). An
+/// all-zero mask degenerates to the plain box blur. Fully foreground
+/// windows fall back to the center sample (subject stays crisp).
+fn blur_rgb8_masked(
+    src: &[u8],
+    mask: &Mask,
+    w: usize,
+    h: usize,
+    radius: u32,
+    scratch: &mut [u8],
+    out: &mut [u8],
+) {
     let r = radius as i64;
-    let window = |lo: i64, hi: i64| (hi - lo + 1) as u32;
+    let wgt = |alpha: f32| if alpha >= 0.5 { 0.0 } else { 1.0 - alpha };
 
-    // Horizontal pass: sliding window over each row, parallel over rows.
+    // Horizontal pass: sliding weighted window over each row.
     scratch
         .par_chunks_mut(w * 3)
         .enumerate()
@@ -207,47 +261,62 @@ fn blur_rgb8(src: &[u8], w: usize, h: usize, radius: u32, scratch: &mut [u8], ou
             let row_in = &src[y * w * 3..(y + 1) * w * 3];
             let mut lo: i64 = 0;
             let mut hi: i64 = -1;
-            let mut sum = [0u32; 3];
+            let mut sum = [0f32; 3];
+            let mut wsum = 0f32;
             for x in 0..w {
                 let hi_t = (x as i64 + r).min(w as i64 - 1);
                 while hi < hi_t {
                     hi += 1;
+                    let wi = wgt(mask.data[y * w + hi as usize]);
+                    wsum += wi;
                     for c in 0..3 {
-                        sum[c] += row_in[(hi * 3 + c as i64) as usize] as u32;
+                        sum[c] += wi * row_in[(hi * 3 + c as i64) as usize] as f32;
                     }
                 }
                 let lo_t = (x as i64 - r).max(0);
                 while lo < lo_t {
+                    let wi = wgt(mask.data[y * w + lo as usize]);
+                    wsum -= wi;
                     for c in 0..3 {
-                        sum[c] -= row_in[(lo * 3 + c as i64) as usize] as u32;
+                        sum[c] -= wi * row_in[(lo * 3 + c as i64) as usize] as f32;
                     }
                     lo += 1;
                 }
-                let n = window(lo, hi);
-                for c in 0..3 {
-                    row_out[x * 3 + c] = (sum[c] / n) as u8;
+                if wsum > 0.0 {
+                    for c in 0..3 {
+                        row_out[x * 3 + c] = (sum[c] / wsum).round() as u8;
+                    }
+                } else {
+                    row_out[x * 3..x * 3 + 3].copy_from_slice(&row_in[x * 3..x * 3 + 3]);
                 }
             }
         });
 
     // Vertical pass: each output row scans the scratch rows in its window,
-    // parallel over rows.
+    // weighted by the original mask at each sample.
     out.par_chunks_mut(w * 3)
         .enumerate()
         .for_each(|(y, row_out)| {
+            let lo = (y as i64 - r).max(0);
+            let hi = (y as i64 + r).min(h as i64 - 1);
             for x in 0..w {
-                let lo = (y as i64 - r).max(0);
-                let hi = (y as i64 + r).min(h as i64 - 1);
-                let n = window(lo, hi);
-                let mut sum = [0u32; 3];
+                let mut sum = [0f32; 3];
+                let mut wsum = 0f32;
                 for ry in lo..=hi {
+                    let wi = wgt(mask.data[ry as usize * w + x]);
+                    wsum += wi;
                     let base = ((ry as usize) * w + x) * 3;
                     for c in 0..3 {
-                        sum[c] += scratch[base + c] as u32;
+                        sum[c] += wi * scratch[base + c] as f32;
                     }
                 }
-                for c in 0..3 {
-                    row_out[x * 3 + c] = (sum[c] / n) as u8;
+                if wsum > 0.0 {
+                    for c in 0..3 {
+                        row_out[x * 3 + c] = (sum[c] / wsum).round() as u8;
+                    }
+                } else {
+                    row_out[x * 3..x * 3 + 3]
+                        .copy_from_slice(&scratch[(y * w + x) * 3..(y * w + x) * 3 + 3]);
                 }
             }
         });
@@ -351,6 +420,59 @@ mod tests {
     }
 
     #[test]
+    fn subject_light_lifts_only_foreground() {
+        let mut c = CpuCompositor::new();
+        c.set_subject_light(0.5);
+        c.update_background(BackgroundMode::Color { r: 0, g: 0, b: 0 })
+            .unwrap();
+        let src = frame(res(3, 1), 128);
+        let m = Mask {
+            resolution: res(3, 1),
+            data: vec![1.0, 0.0, 0.5],
+        };
+        let mut out = FrameBuffer::new(FrameMetadata {
+            sequence: 0,
+            timestamp_us: 0,
+            resolution: res(3, 1),
+            format: PixelFormat::Rgb8,
+        });
+        c.composite(&src, &m, &mut out).unwrap();
+        // mask 1: v = 128 + 0.5*1*(255-128) = 191.5 -> 192 (lit).
+        assert_eq!(out.data[0], 192, "subject lifted toward white");
+        // mask 0: pure background, untouched.
+        assert_eq!(out.data[3], 0);
+        // mask 0.5: v = 64 + 0.5*0.5*(255-64) = 111.75 -> 112.
+        assert_eq!(out.data[6], 112, "half-mask lit halfway");
+    }
+
+    #[test]
+    fn subject_light_zero_matches_plain_blend() {
+        let mut c = CpuCompositor::new(); // default: no light
+        c.update_background(BackgroundMode::Color {
+            r: 10,
+            g: 20,
+            b: 30,
+        })
+        .unwrap();
+        let src = frame(res(2, 1), 200);
+        let m = Mask {
+            resolution: res(2, 1),
+            data: vec![0.8, 0.2],
+        };
+        let mut out = FrameBuffer::new(FrameMetadata {
+            sequence: 0,
+            timestamp_us: 0,
+            resolution: res(2, 1),
+            format: PixelFormat::Rgb8,
+        });
+        c.composite(&src, &m, &mut out).unwrap();
+        // r: 0.8*200 + 0.2*10 = 162; b: 0.8*200 + 0.2*30 = 166.
+        assert_eq!(out.data[0], 162);
+        assert_eq!(out.data[2], 166);
+        assert_eq!(out.data[3], 48); // 0.2*200 + 0.8*10 = 48
+    }
+
+    #[test]
     fn blur_preserves_uniform_field() {
         let mut c = CpuCompositor::new();
         c.update_background(BackgroundMode::Blur { radius: 3.0 })
@@ -394,6 +516,88 @@ mod tests {
         let right = out.data[(w - 1) * 3];
         assert!(left as u16 > mid as u16 + 16, "left {left} vs mid {mid}");
         assert!(mid as u16 > right as u16 + 16, "mid {mid} vs right {right}");
+    }
+
+    /// U9.5 regression: with a sharp subject (alpha 1) on the left of a
+    /// bright/dark step, the blurred background right of the edge must stay
+    /// pure dark — the old full-window box blur smeared the bright subject
+    /// across the matte edge (halo).
+    #[test]
+    fn blur_excludes_foreground_from_kernel() {
+        let w = 32; // left 16 px subject (255), right 16 px background (0)
+        let mut px = vec![255u8; w * 4 * 3];
+        for row in px.chunks_exact_mut(w * 3) {
+            for v in row[w / 2 * 3..].iter_mut() {
+                *v = 0;
+            }
+        }
+        let src = frame_of(res(w as u32, 4), &px);
+        let mut m = mask(res(w as u32, 4), 0.0);
+        for y in 0..4usize {
+            for x in 0..(w / 2) {
+                m.data[y * w + x] = 1.0;
+            }
+        }
+        let mut c = CpuCompositor::new();
+        c.update_background(BackgroundMode::Blur { radius: 4.0 })
+            .unwrap();
+        let mut out = FrameBuffer::new(FrameMetadata {
+            sequence: 0,
+            timestamp_us: 0,
+            resolution: res(w as u32, 4),
+            format: PixelFormat::Rgb8,
+        });
+        c.composite(&src, &m, &mut out).unwrap();
+        // Background side: no bright anything, even adjacent to the edge.
+        for y in 0..4usize {
+            for x in (w / 2)..w {
+                let i = (y * w + x) * 3;
+                assert_eq!(&out.data[i..i + 3], &[0, 0, 0], "halo at row {y} col {x}");
+            }
+        }
+        // Subject side (alpha 1) composites the source unchanged.
+        for y in 0..4usize {
+            for x in 0..(w / 2) {
+                let i = (y * w + x) * 3;
+                assert_eq!(
+                    &out.data[i..i + 3],
+                    &[255, 255, 255],
+                    "subject pixel (row {y}, col {x})"
+                );
+            }
+        }
+    }
+
+    /// U9.5: image backgrounds spill their color over the subject edge.
+    /// At alpha 0.5 with a white fg over a blue bg, the effective alpha
+    /// drops to 0.375: the red channel is pulled from 128 (plain blend)
+    /// toward the blue background; alpha 0/1 stay exact.
+    #[test]
+    fn light_wrap_spills_background_on_subject_edge() {
+        let mut c = CpuCompositor::new();
+        c.update_background(BackgroundMode::Image {
+            path: temp_image(0, 0, 255).into(),
+        })
+        .unwrap();
+        let src = frame(res(3, 1), 255);
+        let m = Mask {
+            resolution: res(3, 1),
+            data: vec![1.0, 0.5, 0.0],
+        };
+        let mut out = FrameBuffer::new(FrameMetadata {
+            sequence: 0,
+            timestamp_us: 0,
+            resolution: res(3, 1),
+            format: PixelFormat::Rgb8,
+        });
+        c.composite(&src, &m, &mut out).unwrap();
+        // Alpha 1: subject untouched.
+        assert_eq!(&out.data[..3], &[255, 255, 255]);
+        // Alpha 0.5: 0.375 * fg + 0.625 * bg per channel.
+        assert_eq!(out.data[3], (0.375f32 * 255.0).round() as u8, "red wrapped");
+        assert_eq!(out.data[5], 255, "blue stays background blue");
+        // Alpha 0: pure background.
+        assert_eq!(&out.data[6..9], &[0, 0, 255]);
     }
 
     #[test]

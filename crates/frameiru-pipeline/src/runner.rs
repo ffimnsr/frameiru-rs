@@ -102,6 +102,12 @@ pub(crate) fn spawn_inference(
                 frameiru_segment::TemporalSmoother::new(alpha)
                     .expect("mask_alpha validated by PipelineConfig")
             });
+            // Motion-gated cadence: static scenes skip segmentation, motion
+            // overrides the cap (U9.6).
+            let mut gate = crate::motion::InferGate::new(
+                shared.config.infer_max_fps,
+                shared.config.infer_motion_threshold,
+            );
             let mut last_drops = 0u64;
             while !shared.stop.load(Ordering::Relaxed) {
                 match input_rx.recv_timeout(STOP_POLL) {
@@ -116,6 +122,9 @@ pub(crate) fn spawn_inference(
                                 s.reset();
                             }
                             last_drops = drops;
+                        }
+                        if !gate.should_infer(&frame, Instant::now()) {
+                            continue; // scene idle: previous mask still fits
                         }
                         match segmenter.segment(&frame) {
                             Ok(mask) => {
@@ -156,6 +165,14 @@ pub(crate) fn spawn_compose(
             let mut sink = sink;
             let mut output: Option<FrameBuffer> = None;
             let mut pacer = Pacer::new(shared.config.max_fps);
+            // Idle-composite gating state (U9.6): when the frame is unchanged
+            // and neither the mask nor the background moved, reuse the last
+            // composite instead of re-blurring/re-blending.
+            let mut last_sig: Vec<u8> = Vec::new();
+            let mut has_sig = false;
+            let mut last_mask: Option<Arc<Mask>> = None;
+            let mut last_bg: Option<BackgroundMode> = None;
+            let mut bg_dirty = true;
             while !shared.stop.load(Ordering::Relaxed) {
                 let frame = match input_rx.recv_timeout(STOP_POLL) {
                     Ok(frame) => frame,
@@ -168,6 +185,7 @@ pub(crate) fn spawn_compose(
                     if let Err(e) = compositor.update_background(mode.clone()) {
                         tracing::warn!("background update rejected ({mode:?}): {e}");
                     } else {
+                        bg_dirty = true;
                         shared.background.store(Arc::new(mode));
                     }
                 }
@@ -176,19 +194,48 @@ pub(crate) fn spawn_compose(
                 // Without a segmenter (or before its first mask) the slot is
                 // empty-invalid or sized for an old resolution: substitute
                 // an all-foreground mask so composition still works.
-                let mask = shared.mask_slot.load();
+                let mask = shared.mask_slot.load_full();
                 let mask = if mask.resolution != frame.metadata.resolution
                     || mask.data.len() < frame.metadata.resolution.area() as usize
                 {
                     let filled = Arc::new(Mask::filled(frame.metadata.resolution, 1.0));
                     shared.mask_slot.store(filled);
-                    shared.mask_slot.load()
+                    shared.mask_slot.load_full()
                 } else {
                     mask
                 };
-                if let Err(e) = compositor.composite(&frame, &mask, out) {
-                    tracing::warn!("composite error: {e}");
-                    continue;
+
+                // Scene signature for idle detection (cheap; failing to
+                // produce one just disables the skip).
+                let sig = crate::motion::luma_signature(&frame).ok();
+                let bg = shared.background.load();
+                let idle = !bg_dirty
+                    && has_sig
+                    && last_mask.is_some()
+                    && matches!(
+                        &**bg,
+                        BackgroundMode::Blur { .. } | BackgroundMode::Image { .. }
+                    )
+                    && Arc::ptr_eq(&mask, last_mask.as_ref().expect("checked"))
+                    && last_bg.as_ref() == Some(&**bg)
+                    && sig.as_ref().is_some_and(|s| {
+                        crate::motion::luma_diff(s, &last_sig)
+                            < shared.config.compose_idle_threshold
+                    });
+                if idle {
+                    shared.metrics.on_composite_skip();
+                } else {
+                    if let Err(e) = compositor.composite(&frame, &mask, out) {
+                        tracing::warn!("composite error: {e}");
+                        continue;
+                    }
+                    last_mask = Some(mask);
+                    last_bg = Some((**bg).clone());
+                    bg_dirty = false;
+                }
+                if let Some(s) = sig {
+                    last_sig = s;
+                    has_sig = true;
                 }
 
                 let _ = shared.preview_tx.send(Arc::new(out.clone()));

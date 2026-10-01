@@ -19,6 +19,19 @@ pub struct PipelineConfig {
     /// `0.0` freezes the first mask. Counters mask flicker (MediaPipe-style
     /// models) and low mask rates.
     pub mask_alpha: Option<f32>,
+    /// Cap on segmentation rate; `0` disables throttling (segment every
+    /// frame). Static scenes skip inference entirely, motion overrides the
+    /// cap at half the interval (see [`crate::motion::InferGate`]).
+    pub infer_max_fps: u32,
+    /// Luma-diff (8-bit units) above which a frame is treated as "moved".
+    pub infer_motion_threshold: f32,
+    /// Composed frames are reused (composite skipped, sink still fed) when
+    /// the frame's luma signature change stays below this; only applies to
+    /// `Blur`/`Image` backgrounds where compositing is the expensive part.
+    pub compose_idle_threshold: f32,
+    /// Subject fill light in [0, 1]; lifts the masked foreground toward
+    /// white (`+ light * mask * (255 - out)` per channel). 0 disables.
+    pub subject_light: f32,
 }
 
 impl Default for PipelineConfig {
@@ -28,6 +41,10 @@ impl Default for PipelineConfig {
             preview_capacity: 4,
             max_fps: 30,
             mask_alpha: None,
+            infer_max_fps: 30,
+            infer_motion_threshold: 2.0,
+            compose_idle_threshold: 1.0,
+            subject_light: 0.0,
         }
     }
 }
@@ -48,6 +65,17 @@ impl PipelineConfig {
             if !alpha.is_finite() || !(0.0..=1.0).contains(&alpha) {
                 return Err(FrameiruError::InvalidArgument(format!(
                     "mask_alpha must be in [0, 1], got {alpha}"
+                )));
+            }
+        }
+        for (name, v) in [
+            ("infer_motion_threshold", self.infer_motion_threshold),
+            ("compose_idle_threshold", self.compose_idle_threshold),
+            ("subject_light", self.subject_light),
+        ] {
+            if !v.is_finite() || v < 0.0 {
+                return Err(FrameiruError::InvalidArgument(format!(
+                    "{name} must be finite and >= 0, got {v}"
                 )));
             }
         }

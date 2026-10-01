@@ -3,11 +3,9 @@
 pub mod bench;
 pub mod control;
 pub mod devices;
-pub mod models;
 pub mod run;
 
 pub use bench::BenchArgs;
-pub use models::ModelsCmd;
 
 use std::path::PathBuf;
 
@@ -45,22 +43,49 @@ pub struct RunArgs {
     /// Discard composited frames instead of writing to a loopback device.
     #[arg(long)]
     pub null_sink: bool,
-    /// ONNX model path; enables background segmentation.
+    /// ONNX model path; overrides the embedded default. Best used with
+    /// `--input-size` + `--normalization` matching the graph.
     #[arg(long)]
     pub model: Option<PathBuf>,
-    /// ONNX model input canvas (WxH). Must match the graph: 320x320 for
+    /// ONNX model input canvas (WxH) when `--model` is given: 320x320 for
     /// u2net/silueta, 1024x1024 for isnet/BiRefNet/rmbg-2.0, 256x256 for
-    /// RVM / MediaPipe selfie.
-    #[arg(long, default_value = "320x320")]
+    /// RVM (the embedded default).
+    #[arg(long, default_value = "256x256")]
     pub input_size: String,
-    /// Tensor normalization: `imagenet` (mean/std, u2net/silueta/isnet/RVM)
-    /// or `unit` (plain v/255, MediaPipe-style models).
+    /// Tensor normalization for `--model`: `imagenet` (mean/std, u2net/
+    /// silueta/isnet/RVM) or `unit` (plain v/255, MediaPipe-style). The
+    /// embedded model uses `imagenet`.
     #[arg(long, default_value = "imagenet")]
     pub normalization: String,
     /// Mask EMA blending factor: `off`, or 0.0 (freeze) ..= 1.0 (no
     /// smoothing). Default 0.5 counters flicker and low mask rates.
     #[arg(long, default_value = "0.5")]
     pub mask_alpha: String,
+    /// Cap on segmentation rate; static scenes skip inference entirely
+    /// (motion overrides the cap at half the interval). 0 = every frame.
+    #[arg(long, default_value_t = 30)]
+    pub infer_fps: u32,
+    /// Disable guided-filter mask refinement (edge-aware upsampling against
+    /// the full-res frame). On by default; fast-GF costs ~2-3 ms at 640x480.
+    #[arg(long)]
+    pub no_refine_mask: bool,
+    /// ORT intra-op threads. Default pins to the physical core count; use
+    /// `--threads 2..4` on constrained CPUs. Must be >= 1.
+    #[arg(long, value_name = "N")]
+    pub threads: Option<usize>,
+    /// Foreground mask dilation in pixels (0 disables). Default 0 prevents
+    /// mask bulge into nearby background objects.
+    #[arg(long, default_value_t = 0)]
+    pub mask_dilate: u32,
+    /// Soft mask threshold center (0 = off, 1 = max). Default 0.4 collapses
+    /// ghosting mid-alphas toward background/subject. `off` disables.
+    #[arg(long, default_value = "0.4")]
+    pub mask_contrast: String,
+    /// Subject fill light: lifts the masked subject toward white
+    /// (`0..1`, `0` off). Makes the person look lit without touching the
+    /// background.
+    #[arg(long, default_value = "0")]
+    pub subject_light: String,
     /// Capture width.
     #[arg(long, default_value_t = 640)]
     pub width: u32,
@@ -147,6 +172,38 @@ pub fn parse_mask_alpha(s: &str) -> anyhow::Result<Option<f32>> {
     Ok(Some(alpha))
 }
 
+/// Parses the soft mask threshold: `off` or a value in [0, 1].
+/// `0.0` disables it (no contrast stretch of the mask).
+#[allow(dead_code)]
+pub fn parse_mask_contrast(s: &str) -> anyhow::Result<f32> {
+    if s.trim().eq_ignore_ascii_case("off") {
+        return Ok(0.0);
+    }
+    let c: f32 = s
+        .trim()
+        .parse()
+        .with_context(|| format!("bad mask-contrast {s:?}"))?;
+    if !c.is_finite() || !(0.0..=1.0).contains(&c) {
+        bail!("mask-contrast must be in [0, 1] or `off`, got {s:?}");
+    }
+    Ok(c)
+}
+
+/// Parses the subject fill light: `off` or a value in [0, 1] (`0` = off).
+pub fn parse_subject_light(s: &str) -> anyhow::Result<f32> {
+    if s.trim().eq_ignore_ascii_case("off") {
+        return Ok(0.0);
+    }
+    let v: f32 = s
+        .trim()
+        .parse()
+        .with_context(|| format!("bad subject-light {s:?}"))?;
+    if !v.is_finite() || !(0.0..=1.0).contains(&v) {
+        bail!("subject-light must be in [0, 1] or `off`, got {s:?}");
+    }
+    Ok(v)
+}
+
 /// Parses a normalization scheme for ONNX preprocessing.
 #[cfg(feature = "onnx")]
 pub fn parse_normalization(s: &str) -> anyhow::Result<frameiru_segment::Normalization> {
@@ -156,6 +213,7 @@ pub fn parse_normalization(s: &str) -> anyhow::Result<frameiru_segment::Normaliz
         other => bail!("unknown normalization {other:?}; use imagenet (mean/std) or unit (v/255)"),
     })
 }
+
 pub fn parse_resolution(s: &str) -> anyhow::Result<Resolution> {
     let (w, h) = s
         .split_once('x')
@@ -233,6 +291,17 @@ mod tests {
         assert_eq!(parse_mask_alpha("1").unwrap(), Some(1.0));
         for bad in ["1.5", "-0.1", "nan", ""] {
             assert!(parse_mask_alpha(bad).is_err(), "{bad:?} must fail");
+        }
+    }
+
+    #[test]
+    fn parses_subject_light() {
+        assert_eq!(parse_subject_light("off").unwrap(), 0.0);
+        assert_eq!(parse_subject_light("0").unwrap(), 0.0);
+        assert_eq!(parse_subject_light("0.6").unwrap(), 0.6);
+        assert_eq!(parse_subject_light("1").unwrap(), 1.0);
+        for bad in ["1.5", "-0.1", "nan", ""] {
+            assert!(parse_subject_light(bad).is_err(), "{bad:?} must fail");
         }
     }
 

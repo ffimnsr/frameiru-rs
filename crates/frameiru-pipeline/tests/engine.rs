@@ -8,8 +8,8 @@ use frameiru_capture::MockSource;
 use frameiru_compose::CpuCompositor;
 use frameiru_core::buffer::Mask;
 use frameiru_core::error::FrameiruError;
-use frameiru_core::format::PixelFormat;
-use frameiru_core::traits::{Compositor, FrameSink, Segmenter};
+use frameiru_core::format::{FrameMetadata, PixelFormat};
+use frameiru_core::traits::{Compositor, FrameSink, FrameSource, Segmenter};
 use frameiru_core::{BackgroundMode, FrameBuffer, Resolution};
 use frameiru_pipeline::{Engine, PipelineConfig, PipelineHandle};
 use frameiru_sink::MockSink;
@@ -26,6 +26,7 @@ fn res() -> Resolution {
 fn config() -> PipelineConfig {
     PipelineConfig {
         max_fps: 0, // uncapped for deterministic tests
+        compose_idle_threshold: 0.5,
         ..Default::default()
     }
 }
@@ -385,6 +386,8 @@ fn run_with_alpha(
         PipelineConfig {
             max_fps: 0,
             mask_alpha,
+            // The oscillation test needs every frame segmented (no gating).
+            infer_max_fps: 0,
             ..Default::default()
         },
         Box::new(source),
@@ -464,4 +467,152 @@ fn reject_bad_config() {
         Box::new(MockSink::new()),
     );
     assert!(err.is_err());
+}
+
+/// Source emitting byte-identical frames (static scene for gating tests).
+struct ConstSource {
+    resolution: Resolution,
+    sequence: u64,
+}
+
+impl ConstSource {
+    fn new(resolution: Resolution) -> Self {
+        Self {
+            resolution,
+            sequence: 0,
+        }
+    }
+}
+
+impl FrameSource for ConstSource {
+    fn resolution(&self) -> Resolution {
+        self.resolution
+    }
+
+    fn format(&self) -> PixelFormat {
+        PixelFormat::Rgb8
+    }
+
+    fn next_frame(&mut self) -> Result<FrameBuffer, FrameiruError> {
+        let mut frame = FrameBuffer::new(FrameMetadata {
+            sequence: self.sequence,
+            timestamp_us: frameiru_core::timestamp_us_now(),
+            resolution: self.resolution,
+            format: PixelFormat::Rgb8,
+        });
+        frame.data = vec![77u8; (self.resolution.area() * 3) as usize];
+        self.sequence += 1;
+        Ok(frame)
+    }
+}
+
+/// U9.6: an idle blur scene reuses the previous composite (composite
+/// skipped, sink still fed at the same rate).
+#[test]
+fn idle_blur_scene_reuses_composites() {
+    let source = ConstSource::new(res());
+    let compositor = CpuCompositor::new();
+    let sink = RecordingSink::default();
+    let engine = Engine::start(
+        config(),
+        Box::new(source),
+        None, // no segmenter: the fallback mask is stored once and stays put
+        Box::new(compositor),
+        Box::new(sink.clone()),
+    )
+    .unwrap();
+    let handle = engine.handle();
+    // The engine must own the background (the shared slot gates the skip).
+    handle
+        .update_background(BackgroundMode::Blur { radius: 3.0 })
+        .unwrap();
+
+    wait_until(
+        "composites reused on idle scene",
+        Duration::from_secs(10),
+        || {
+            let m = handle.metrics();
+            m.frames_composited >= 10 && m.composites_skipped >= 3
+        },
+    );
+    // Join the workers first so the counters are quiescent: reading them
+    // live races the compose thread's per-frame atomic stores.
+    engine.shutdown();
+    let m = handle.metrics();
+    assert!(
+        m.composites_skipped < m.frames_composited,
+        "first composite(s) must have been real: skipped={} composited={}, captured={}",
+        m.composites_skipped,
+        m.frames_composited,
+        m.frames_captured
+    );
+}
+
+/// U9.6: a moving scene never reuses composites.
+#[test]
+fn moving_scene_never_reuses_composites() {
+    let source = MockSource::new(res()).unwrap(); // animated pattern
+    let compositor = CpuCompositor::new();
+    let sink = RecordingSink::default();
+    let engine = Engine::start(
+        config(),
+        Box::new(source),
+        None,
+        Box::new(compositor),
+        Box::new(sink.clone()),
+    )
+    .unwrap();
+    let handle = engine.handle();
+    handle
+        .update_background(BackgroundMode::Blur { radius: 3.0 })
+        .unwrap();
+
+    wait_until("frames flowing", Duration::from_secs(10), || {
+        handle.metrics().frames_composited >= 30
+    });
+    assert_eq!(
+        handle.metrics().composites_skipped,
+        0,
+        "animated source must never be idle"
+    );
+    engine.shutdown();
+}
+
+/// U9.6: inference is throttled on a static scene (`infer_max_fps`).
+#[test]
+fn inference_throttle_limits_masks_on_static_scene() {
+    let source = ConstSource::new(res());
+    let compositor = CpuCompositor::new();
+    let sink = RecordingSink::default();
+    let cfg = PipelineConfig {
+        max_fps: 0,
+        infer_max_fps: 1, // one mask per second at most
+        ..Default::default()
+    };
+    let engine = Engine::start(
+        cfg,
+        Box::new(source),
+        Some(Box::new(ConstantSegmenter { value: 0.0 })),
+        Box::new(compositor),
+        Box::new(sink),
+    )
+    .unwrap();
+    let handle = engine.handle();
+
+    wait_until(
+        "captured frames well past the throttle",
+        Duration::from_secs(10),
+        || {
+            let m = handle.metrics();
+            m.frames_captured >= 100 && m.masks_computed >= 1
+        },
+    );
+    let m = handle.metrics();
+    assert!(
+        m.masks_computed < m.frames_captured / 2,
+        "static scene must throttle inference: {} masks vs {} frames",
+        m.masks_computed,
+        m.frames_captured
+    );
+    engine.shutdown();
 }

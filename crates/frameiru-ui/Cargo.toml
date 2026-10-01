@@ -7,7 +7,7 @@ license.workspace = true
 authors.workspace = true
 
 [features]
-default = ["gpu", "v4l2"]
+default = ["gpu", "v4l2", "onnx"]
 # GPU compositor via wgpu (falls back to CPU automatically).
 gpu = ["frameiru-compose/gpu"]
 # Real camera + loopback support; without it the GUI runs on the mock

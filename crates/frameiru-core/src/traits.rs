@@ -44,6 +44,11 @@ pub trait Compositor: Send + 'static {
 
     /// Applies a new background mode at runtime.
     fn update_background(&mut self, mode: BackgroundMode) -> Result<(), FrameiruError>;
+
+    /// Subject fill light `0..=1`: the composite is lifted toward white by
+    /// `light * mask * (1 - out)` — brightens only the foreground ("lit").
+    /// `0.0` disables. Default no-op for custom compositors.
+    fn set_subject_light(&mut self, _light: f32) {}
 }
 
 /// Consumes composited frames (v4l2loopback writer, preview broadcast, etc.).

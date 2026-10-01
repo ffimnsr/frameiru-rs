@@ -15,7 +15,7 @@ struct Cli {
     #[arg(long)]
     model: Option<PathBuf>,
     /// ONNX model input canvas (WxH); must match the graph.
-    #[arg(long, default_value = "320x320")]
+    #[arg(long, default_value = "256x256")]
     input_size: String,
 }
 
@@ -30,8 +30,8 @@ fn main() -> anyhow::Result<()> {
             _ => None,
         })
         .unwrap_or_else(|| {
-            eprintln!("bad --input-size {:?}; using 320x320", cli.input_size);
-            (320, 320)
+            eprintln!("bad --input-size {:?}; using 256x256", cli.input_size);
+            (256, 256)
         });
     let model_input = Resolution {
         width: w,

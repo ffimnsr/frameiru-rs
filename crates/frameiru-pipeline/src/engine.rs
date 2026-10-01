@@ -39,6 +39,7 @@ impl Engine {
         sink: Box<dyn FrameSink>,
     ) -> Result<Self, FrameiruError> {
         config.validate()?;
+        let subject_light = config.subject_light;
 
         let (capture_tx, capture_rx) = bounded::<FrameBuffer>(config.channel_capacity);
         let (infer_tx, infer_rx) = bounded::<FrameBuffer>(1);
@@ -74,6 +75,8 @@ impl Engine {
         let mut threads = handle.inner.threads.lock().expect("threads mutex poisoned");
         threads.push(spawn_capture(Arc::clone(&shared), source));
 
+        let mut compositor = compositor;
+        compositor.set_subject_light(subject_light);
         // Inference is optional and fully decoupled: it samples frames from
         // the capture stream into the mask slot without gating the video.
         if let Some(segmenter) = segmenter {
@@ -185,6 +188,7 @@ impl frameiru_ipc::Control for PipelineHandle {
             capture_fps: m.capture_fps,
             composite_fps: m.composite_fps,
             frames_composited: m.frames_composited,
+            composites_skipped: m.composites_skipped,
             masks_computed: m.masks_computed,
             latency_us: m.latency_us,
             background: self.current_background(),

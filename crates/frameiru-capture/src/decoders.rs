@@ -235,12 +235,8 @@ mod tests {
         let w = 4u32;
         let h = 2u32;
         let mut input = vec![0u8; (w * h * 3 / 2) as usize];
-        for i in 0..(w * h) as usize {
-            input[i] = 126; // limited-range mid gray
-        }
-        for i in (w * h) as usize..input.len() {
-            input[i] = 128; // neutral chroma
-        }
+        input[..(w * h) as usize].fill(126); // limited-range mid gray
+        input[(w * h) as usize..].fill(128); // neutral chroma
         let mut out = vec![0u8; (w * h * 3) as usize];
         nv12_to_rgb8(&input, w, h, &mut out).unwrap();
         assert!(out.iter().all(|&v| (v as i32 - 128).abs() <= 6));

@@ -33,7 +33,10 @@ pub fn status(socket: PathBuf) -> anyhow::Result<()> {
             println!("background   : {:?}", status.background);
             println!("capture fps  : {:.1}", status.capture_fps);
             println!("composite fps: {:.1}", status.composite_fps);
-            println!("frames       : {}", status.frames_composited);
+            println!(
+                "frames       : {} ({} reused)",
+                status.frames_composited, status.composites_skipped
+            );
             println!("masks        : {} computed", status.masks_computed);
             println!("latency      : {} us", status.latency_us);
             Ok(())

@@ -9,15 +9,19 @@ authors.workspace = true
 [features]
 default = []
 # ONNX inference via the `ort` crate. Kept off by default: enabling it
-# downloads onnxruntime binaries at build time and pulls the model download
-# helper (ureq). Preprocessing, postprocessing, and the temporal smoother
-# are always available and fully tested without it.
-onnx = ["dep:ort", "dep:ureq"]
+# downloads onnxruntime binaries at build time. Preprocessing,
+# postprocessing, and the temporal smoother are always available and fully
+# tested without it.
+onnx = ["dep:ort"]
 
 [dependencies]
 frameiru-core = { workspace = true }
 ort = { version = "2.0.0-rc.13", optional = true, features = ["download-binaries"] }
-ureq = { version = "2", optional = true }
 tracing.workspace = true
 # SIMD-accelerated bilinear resize for letterbox preprocessing.
 fast_image_resize = "6"
+
+[dev-dependencies]
+# ort's process-global cpuinfo/env init races under the parallel test
+# harness; real-model integration tests run serially.
+serial_test = "3"

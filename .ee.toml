@@ -1,10 +1,6 @@
 [agents]
-default_agent = "assistant"
+default_agent = "gravity"
 enabled = true
-
-[agents.rubber_duck]
-external_agent_id = "gravity"
-mode = "manual"
 
 [agents.servers.gravity]
 args = ["--uid="]
