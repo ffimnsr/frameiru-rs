@@ -3,6 +3,7 @@
 //! module (mock source + null sink).
 
 use std::cell::RefCell;
+use std::fs::File;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -12,6 +13,10 @@ use frameiru_core::format::Resolution;
 use frameiru_core::traits::{FrameSink, FrameSource, Segmenter};
 use frameiru_core::{BackgroundMode, FrameBuffer};
 use frameiru_pipeline::{Engine, PipelineConfig};
+use frameiru_webcam_utils::controls::{
+    find_control, format_bool, parse_bool, ControlInfo, ControlKind,
+};
+use frameiru_webcam_utils::{detect, fov, v4l2, vendor, Error as WebcamError};
 use slint::{ComponentHandle, SharedString, VecModel};
 
 slint::include_modules!();
@@ -26,6 +31,8 @@ pub struct DeviceEntry {
     pub id: String,
     /// Friendly user-visible label: e.g. "Anker PowerConf C200 (/dev/video0)".
     pub display_name: String,
+    /// True for supported webcams whose vendor controls are exposed in the drawer.
+    pub is_anker_c200: bool,
 }
 
 /// Cleans raw V4L2 card/node name to remove truncated duplicate model strings.
@@ -58,6 +65,7 @@ pub fn detect_devices() -> Vec<DeviceEntry> {
     let mut devices = vec![DeviceEntry {
         id: "(mock)".into(),
         display_name: "Mock Camera ((mock))".into(),
+        is_anker_c200: false,
     }];
 
     #[cfg(feature = "v4l2")]
@@ -93,7 +101,12 @@ pub fn detect_devices() -> Vec<DeviceEntry> {
 
             let clean_name = clean_device_name(&raw_name);
             let display_name = format!("{clean_name} ({})", path.display());
-            real_devices.push((path.to_string_lossy().to_string(), display_name));
+            let is_anker_c200 = detect::is_anker_c200(path);
+            real_devices.push((
+                path.to_string_lossy().to_string(),
+                display_name,
+                is_anker_c200,
+            ));
         }
 
         real_devices.sort_by(|a, b| {
@@ -105,8 +118,12 @@ pub fn detect_devices() -> Vec<DeviceEntry> {
             }
         });
 
-        for (id, display_name) in real_devices {
-            devices.push(DeviceEntry { id, display_name });
+        for (id, display_name, is_anker_c200) in real_devices {
+            devices.push(DeviceEntry {
+                id,
+                display_name,
+                is_anker_c200,
+            });
         }
     }
 
@@ -161,6 +178,15 @@ impl App {
         };
         window.set_model_name(SharedString::from(model_label));
 
+        // Show the webcam control drawer only for a supported Anker C200.
+        let c200_selected = devices
+            .get(default_index as usize)
+            .is_some_and(|d| d.is_anker_c200);
+        window.set_webcam_available(c200_selected);
+        if c200_selected {
+            refresh_webcam_state(&window, &devices);
+        }
+
         Self {
             window,
             engine: None,
@@ -205,7 +231,61 @@ impl App {
 
         let a = app.clone();
         app.borrow().window.on_device_selected(move |_device| {
-            a.borrow().window.set_error_text("".into());
+            let app = a.borrow();
+            app.window.set_error_text("".into());
+            let c200_selected = app.selected_webcam().is_some();
+            app.window.set_webcam_available(c200_selected);
+            if c200_selected {
+                refresh_webcam_state(&app.window, &app.devices);
+                app.window.set_webcam_drawer_open(true);
+            } else {
+                app.window.set_webcam_drawer_open(false);
+            }
+        });
+
+        // Webcam drawer controls (Anker C200 only; callbacks are inert otherwise).
+        let a = app.clone();
+        app.borrow().window.on_webcam_set_fov(move |value| {
+            Self::set_webcam_control(&a, webcam_control("fov"), value.as_str());
+        });
+
+        let a = app.clone();
+        app.borrow().window.on_webcam_set_hdr(move |value| {
+            Self::set_webcam_control(&a, webcam_control("hdr"), if value { "on" } else { "off" });
+        });
+
+        let a = app.clone();
+        app.borrow().window.on_webcam_set_flip(move |value| {
+            Self::set_webcam_control(
+                &a,
+                webcam_control("horizontal_flip"),
+                if value { "on" } else { "off" },
+            );
+        });
+
+        let a = app.clone();
+        app.borrow().window.on_webcam_set_vertical(move |value| {
+            Self::set_webcam_control(
+                &a,
+                webcam_control("vertical_screen"),
+                if value { "on" } else { "off" },
+            );
+        });
+
+        let a = app.clone();
+        app.borrow()
+            .window
+            .on_webcam_set_anti_flicker(move |value| {
+                Self::set_webcam_control(
+                    &a,
+                    webcam_control("anti_flicker"),
+                    if value { "1" } else { "0" },
+                );
+            });
+
+        let a = app.clone();
+        app.borrow().window.on_webcam_set_brightness(move |value| {
+            Self::set_webcam_control(&a, webcam_control("brightness"), &value.to_string());
         });
 
         let a = app.clone();
@@ -364,6 +444,142 @@ impl App {
             })
             .expect("spawn preview pump");
     }
+
+    /// The selected device when it is a supported webcam (Anker C200).
+    fn selected_webcam(&self) -> Option<&DeviceEntry> {
+        let index = self.window.get_selected_device() as usize;
+        self.devices.get(index).filter(|d| d.is_anker_c200)
+    }
+
+    /// Opens the selected webcam, writes a control, then reflects the
+    /// readback value in the drawer (truth-in-UI even when the set fails).
+    fn set_webcam_control(app: &Rc<RefCell<App>>, info: &'static ControlInfo, value: &str) {
+        let app = app.borrow();
+        let Some(device) = app.selected_webcam() else {
+            return;
+        };
+        let fd = match File::options().read(true).write(true).open(&device.id) {
+            Ok(fd) => fd,
+            Err(e) => {
+                app.window
+                    .set_webcam_error(format!("cannot open {}: {e}", device.id).into());
+                return;
+            }
+        };
+        if let Err(e) = write_webcam_value(&fd, info, value) {
+            app.window
+                .set_webcam_error(format!("set {} failed: {e:#}", info.name).into());
+        }
+        push_webcam_control(&app.window, info, &fd);
+    }
+}
+
+/// Returns the statically registered control of `name` (always present).
+fn webcam_control(name: &str) -> &'static ControlInfo {
+    find_control(name).expect("webcam control registry is static")
+}
+
+/// Reads the current value of one control as display text.
+fn read_webcam_value(fd: &File, info: &ControlInfo) -> Result<String, WebcamError> {
+    match info.kind {
+        ControlKind::VendorBool => Ok(format_bool(vendor::get_bool(fd, info.id as u8)?).into()),
+        ControlKind::VendorU8 => Ok(vendor::get_u8(fd, info.id as u8)?.to_string()),
+        ControlKind::VendorFov => Ok(fov::describe_value(fov::get(fd)?)),
+        ControlKind::V4l2Bool => Ok(format_bool(v4l2::get(fd, info.id)? != 0).into()),
+        ControlKind::V4l2Int | ControlKind::V4l2Menu => Ok(v4l2::get(fd, info.id)?.to_string()),
+    }
+}
+
+/// Writes one control from its display text (mirrors the CLI `set` behavior).
+fn write_webcam_value(fd: &File, info: &ControlInfo, value: &str) -> Result<(), WebcamError> {
+    let invalid = || WebcamError::InvalidValue {
+        name: info.name.to_owned(),
+        value: value.to_owned(),
+    };
+    match info.kind {
+        ControlKind::VendorBool => {
+            let value = parse_bool(value).ok_or_else(invalid)?;
+            vendor::set_bool(fd, info.id as u8, value)?;
+        }
+        ControlKind::VendorU8 => {
+            let value = value.parse::<u8>().map_err(|_| invalid())?;
+            vendor::set_u8(fd, info.id as u8, value)?;
+        }
+        ControlKind::VendorFov => {
+            let value = fov::parse_value(value).ok_or_else(invalid)?;
+            fov::set(fd, value)?;
+        }
+        ControlKind::V4l2Bool => {
+            let value = parse_bool(value).ok_or_else(invalid)?;
+            v4l2::set(fd, info.id, if value { 1 } else { 0 })?;
+        }
+        ControlKind::V4l2Int | ControlKind::V4l2Menu => {
+            let value = value.parse::<i32>().map_err(|_| invalid())?;
+            v4l2::set(fd, info.id, value)?;
+        }
+    }
+    Ok(())
+}
+
+/// Syncs the drawer widget for one control with its live device value.
+/// Failed reads leave the current widget state untouched.
+fn push_webcam_control(window: &MainWindow, info: &ControlInfo, fd: &File) {
+    let Ok(text) = read_webcam_value(fd, info) else {
+        return;
+    };
+    match info.name {
+        "fov" => {
+            let raw = fov::get(fd).unwrap_or(0);
+            let preset = fov::FOV_PRESETS
+                .iter()
+                .find(|(value, _, _)| *value == raw)
+                .map(|(_, name, _)| *name)
+                .unwrap_or("custom");
+            window.set_webcam_fov(preset.into());
+        }
+        "hdr" => window.set_webcam_hdr(parse_bool(&text) == Some(true)),
+        "horizontal_flip" => window.set_webcam_flip(parse_bool(&text) == Some(true)),
+        "vertical_screen" => window.set_webcam_vertical(parse_bool(&text) == Some(true)),
+        "anti_flicker" => window.set_webcam_anti_flicker(text != "0"),
+        "brightness" => {
+            if let Ok(value) = text.parse::<i32>() {
+                window.set_webcam_brightness(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Read every drawer control from the selected webcam and sync the widgets.
+fn refresh_webcam_state(window: &MainWindow, devices: &[DeviceEntry]) {
+    window.set_webcam_error("".into());
+    let index = window.get_selected_device() as usize;
+    let Some(device) = devices.get(index).filter(|d| d.is_anker_c200) else {
+        return;
+    };
+    let fd = match File::options().read(true).write(true).open(&device.id) {
+        Ok(fd) => fd,
+        Err(e) => {
+            window
+                .set_webcam_error(format!("webcam control: cannot open {}: {e}", device.id).into());
+            return;
+        }
+    };
+    for name in [
+        "fov",
+        "hdr",
+        "horizontal_flip",
+        "vertical_screen",
+        "anti_flicker",
+        "brightness",
+    ] {
+        push_webcam_control(window, webcam_control(name), &fd);
+    }
+    let brightness = webcam_control("brightness");
+    if let Ok((min, max)) = v4l2::range(&fd, brightness.id) {
+        window.set_webcam_brightness_min(min);
+        window.set_webcam_brightness_max(max);
+    }
 }
 
 fn build_source(
@@ -498,6 +714,7 @@ mod tests {
         let devices = detect_devices();
         assert!(!devices.is_empty());
         assert_eq!(devices[0].id, "(mock)");
+        assert!(!devices[0].is_anker_c200, "mock source is never a C200");
         // If real camera is present in test environment, verify metadata/loopback devices are excluded
         for dev in &devices[1..] {
             assert!(dev.id.starts_with("/dev/video"));

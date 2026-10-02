@@ -253,7 +253,13 @@ fn blur_rgb8_masked(
     let r = radius as i64;
     // Exclude foreground from background blur: any pixel with alpha >= 0.2 is excluded
     // to strictly prevent subject / skin colors from bleeding into the background blur.
-    let wgt = |alpha: f32| if alpha >= 0.20 { 0.0 } else { 1.0 - (alpha / 0.20) };
+    let wgt = |alpha: f32| {
+        if alpha >= 0.20 {
+            0.0
+        } else {
+            1.0 - (alpha / 0.20)
+        }
+    };
 
     // Horizontal pass: sliding weighted window over each row, writing into `out`.
     out.par_chunks_mut(w * 3)
@@ -502,7 +508,8 @@ mod tests {
         }
         let src = frame_of(res(w as u32, h as u32), &px);
         let mut c = CpuCompositor::new();
-        c.update_background(BackgroundMode::Blur { radius: 3.0 }).unwrap();
+        c.update_background(BackgroundMode::Blur { radius: 3.0 })
+            .unwrap();
         let m = mask(res(w as u32, h as u32), 0.0);
         let mut out = FrameBuffer::new(FrameMetadata {
             sequence: 0,

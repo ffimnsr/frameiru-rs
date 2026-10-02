@@ -23,6 +23,7 @@ frameiru-compose = { workspace = true }
 frameiru-pipeline = { workspace = true }
 frameiru-segment = { workspace = true }
 frameiru-sink = { workspace = true }
+frameiru-webcam-utils = { workspace = true }
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
 slint = { version = "1", features = ["backend-winit", "renderer-femtovg"] }

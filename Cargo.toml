@@ -28,6 +28,7 @@ frameiru-compose = { path = "crates/frameiru-compose" }
 frameiru-sink = { path = "crates/frameiru-sink" }
 frameiru-ipc = { path = "crates/frameiru-ipc" }
 frameiru-pipeline = { path = "crates/frameiru-pipeline" }
+frameiru-webcam-utils = { path = "crates/frameiru-webcam-utils" }
 
 # Common async & error handling
 tokio = { version = "1.43", features = ["full"] }

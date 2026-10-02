@@ -6,6 +6,24 @@ use nix::errno::Errno;
 use nix::ioctl_readwrite;
 use thiserror::Error;
 
+/// Mirror of `struct v4l2_queryctrl` from `linux/videodev2.h`.
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
+struct V4l2QueryCtrl {
+    id: u32,
+    ctype: u32,
+    name: [u8; 32],
+    minimum: i32,
+    maximum: i32,
+    step: i32,
+    default_value: i32,
+    flags: u32,
+    reserved: [u32; 2],
+}
+
+// `VIDIOC_QUERYCTRL` is `_IOWR('V', 36, struct v4l2_queryctrl)`.
+ioctl_readwrite!(vidio_queryctrl, b'V', 36, V4l2QueryCtrl);
+
 /// Mirror of `struct v4l2_control` from `linux/videodev2.h`.
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy)]
@@ -26,6 +44,20 @@ pub enum V4l2Error {
         id: u32,
         errno: Errno,
     },
+}
+
+/// Query the minimum/maximum range of a control (`VIDIOC_QUERYCTRL`).
+pub fn range(fd: &impl AsRawFd, id: u32) -> Result<(i32, i32), V4l2Error> {
+    let mut query = V4l2QueryCtrl {
+        id,
+        ..Default::default()
+    };
+    unsafe { vidio_queryctrl(fd.as_raw_fd(), &mut query) }.map_err(|errno| V4l2Error::Query {
+        operation: "query",
+        id,
+        errno,
+    })?;
+    Ok((query.minimum, query.maximum))
 }
 
 /// Read a control value.

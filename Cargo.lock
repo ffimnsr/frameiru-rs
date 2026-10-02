@@ -1845,6 +1845,7 @@ dependencies = [
  "frameiru-pipeline",
  "frameiru-segment",
  "frameiru-sink",
+ "frameiru-webcam-utils",
  "rfd",
  "slint",
  "slint-build",

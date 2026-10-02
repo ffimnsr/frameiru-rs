@@ -157,8 +157,6 @@ pub fn postprocess_mask_refined(
     Ok(())
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;

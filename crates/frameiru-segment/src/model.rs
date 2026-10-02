@@ -491,28 +491,40 @@ impl Segmenter for RvmSegmenter {
 
         let s0_view = match &self.states[0] {
             Some((shape, data)) => (shape.as_slice(), data.as_slice()),
-            None => (self.zero_states[0].0.as_slice(), self.zero_states[0].1.as_slice()),
+            None => (
+                self.zero_states[0].0.as_slice(),
+                self.zero_states[0].1.as_slice(),
+            ),
         };
         let s0 = ort::value::TensorRef::<f32>::from_array_view(s0_view)
             .map_err(|e| FrameiruError::Segmentation(format!("state tensor failed: {e}")))?;
 
         let s1_view = match &self.states[1] {
             Some((shape, data)) => (shape.as_slice(), data.as_slice()),
-            None => (self.zero_states[1].0.as_slice(), self.zero_states[1].1.as_slice()),
+            None => (
+                self.zero_states[1].0.as_slice(),
+                self.zero_states[1].1.as_slice(),
+            ),
         };
         let s1 = ort::value::TensorRef::<f32>::from_array_view(s1_view)
             .map_err(|e| FrameiruError::Segmentation(format!("state tensor failed: {e}")))?;
 
         let s2_view = match &self.states[2] {
             Some((shape, data)) => (shape.as_slice(), data.as_slice()),
-            None => (self.zero_states[2].0.as_slice(), self.zero_states[2].1.as_slice()),
+            None => (
+                self.zero_states[2].0.as_slice(),
+                self.zero_states[2].1.as_slice(),
+            ),
         };
         let s2 = ort::value::TensorRef::<f32>::from_array_view(s2_view)
             .map_err(|e| FrameiruError::Segmentation(format!("state tensor failed: {e}")))?;
 
         let s3_view = match &self.states[3] {
             Some((shape, data)) => (shape.as_slice(), data.as_slice()),
-            None => (self.zero_states[3].0.as_slice(), self.zero_states[3].1.as_slice()),
+            None => (
+                self.zero_states[3].0.as_slice(),
+                self.zero_states[3].1.as_slice(),
+            ),
         };
         let s3 = ort::value::TensorRef::<f32>::from_array_view(s3_view)
             .map_err(|e| FrameiruError::Segmentation(format!("state tensor failed: {e}")))?;
@@ -525,8 +537,11 @@ impl Segmenter for RvmSegmenter {
 
         let outputs = match &self.ratio_input {
             Some(ratio_name) => {
-                let ratio = ort::value::TensorRef::<f32>::from_array_view(([1usize], &[1.0f32][..]))
-                    .map_err(|e| FrameiruError::Segmentation(format!("ratio tensor failed: {e}")))?;
+                let ratio =
+                    ort::value::TensorRef::<f32>::from_array_view(([1usize], &[1.0f32][..]))
+                        .map_err(|e| {
+                            FrameiruError::Segmentation(format!("ratio tensor failed: {e}"))
+                        })?;
                 self.session
                     .run(ort::inputs! {
                         in_name => src,
@@ -547,7 +562,7 @@ impl Segmenter for RvmSegmenter {
                     s2_name => s2,
                     s3_name => s3,
                 })
-                .map_err(|e| FrameiruError::Segmentation(format!("inference failed: {e}")))?
+                .map_err(|e| FrameiruError::Segmentation(format!("inference failed: {e}")))?,
         };
 
         let mask_val = outputs.get(self.output_name.as_str()).ok_or_else(|| {

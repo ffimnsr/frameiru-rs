@@ -131,13 +131,19 @@ impl Segmenter for FusionSegmenter {
                     None => self.mediapipe.segment(frame),
                 });
                 let rvm_res = self.rvm.segment(frame);
-                (mp_worker.join().expect("mediapipe thread panicked"), rvm_res)
+                (
+                    mp_worker.join().expect("mediapipe thread panicked"),
+                    rvm_res,
+                )
             })
         } else {
             std::thread::scope(|s| {
                 let mp_worker = s.spawn(|| self.mediapipe.segment(frame));
                 let rvm_res = self.rvm.segment(frame);
-                (mp_worker.join().expect("mediapipe thread panicked"), rvm_res)
+                (
+                    mp_worker.join().expect("mediapipe thread panicked"),
+                    rvm_res,
+                )
             })
         };
 
@@ -204,7 +210,11 @@ pub fn fuse_masks(mp_mask: &Mask, rvm_mask: &Mask, out: &mut Mask) -> Result<(),
         // In the distant background where MediaPipe sees no human (m < 0.02), RVM is strictly zeroed out.
         // This eliminates all background ghosting and false positives on room furniture/walls.
         let gate = ((m - 0.02) * INV_018).clamp(0.0, 1.0);
-        let rvm_clean = if rvm < 0.05 { 0.0 } else { (rvm - 0.05) * INV_095 };
+        let rvm_clean = if rvm < 0.05 {
+            0.0
+        } else {
+            (rvm - 0.05) * INV_095
+        };
         let rvm_gated = rvm_clean * gate;
 
         // 3. Fused matte: face/core are locked to anchor (>= 1.0), perimeter uses RVM hair matting

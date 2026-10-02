@@ -174,6 +174,185 @@ component SwatchButton inherits Rectangle {
     }
 }
 
+// Webcam control drawer (Anker PowerConf C200). Slides over the live viewport.
+component WebcamDrawer inherits Rectangle {
+    in property <bool> open: false;
+    in property <string> fov: "wide";
+    in property <bool> hdr: false;
+    in property <bool> flip: false;
+    in property <bool> vertical: false;
+    in property <bool> anti_flicker: false;
+    in property <int> brightness: 128;
+    in property <int> brightness_min: 0;
+    in property <int> brightness_max: 255;
+    in property <string> error_text: "";
+    callback set_fov(string);
+    callback set_hdr(bool);
+    callback set_flip(bool);
+    callback set_vertical(bool);
+    callback set_anti_flicker(bool);
+    callback set_brightness(int);
+    callback close();
+
+    visible: root.open;
+    background: #0a0c11f0;
+    border-color: #1f2533;
+    border-width: 1px;
+    animate x { duration: 160ms; easing: ease-out; }
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 9px;
+
+        // Header
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: space-between;
+
+            Text {
+                text: "WEBCAM // C200";
+                font-size: 11px;
+                font-weight: 800;
+                letter-spacing: 1px;
+                color: #00f0ff;
+                vertical-alignment: center;
+            }
+
+            close_btn := Rectangle {
+                height: 22px;
+                border-radius: 3px;
+                border-width: 1px;
+                border-color: close_btn_touch.has-hover ? #ff0055 : #1f2533;
+                background: close_btn_touch.has-hover ? #ff005510 : #12151c;
+
+                close_btn_touch := TouchArea {
+                    clicked => { root.close(); }
+                }
+
+                Text {
+                    text: "CLOSE";
+                    font-size: 9px;
+                    font-weight: 700;
+                    color: close_btn_touch.has-hover ? #ff0055 : #94a3b8;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        Rectangle { height: 1px; background: #1f2533; }
+
+        Text {
+            text: "FOV PRESET";
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            color: #64748b;
+        }
+
+        CyberButton {
+            text: "NARROW";
+            active: root.fov == "narrow";
+            clicked => { root.set_fov("narrow"); }
+        }
+        CyberButton {
+            text: "MEDIUM";
+            active: root.fov == "medium";
+            clicked => { root.set_fov("medium"); }
+        }
+        CyberButton {
+            text: "WIDE";
+            active: root.fov == "wide";
+            clicked => { root.set_fov("wide"); }
+        }
+
+        Rectangle { height: 1px; background: #1f2533; }
+
+        CyberButton {
+            text: "HDR";
+            active: root.hdr;
+            show_dot: true;
+            dot_color: root.hdr ? #00ff88 : #334155;
+            clicked => { root.set_hdr(!root.hdr); }
+        }
+        CyberButton {
+            text: "H-FLIP";
+            active: root.flip;
+            show_dot: true;
+            dot_color: root.flip ? #00ff88 : #334155;
+            clicked => { root.set_flip(!root.flip); }
+        }
+        CyberButton {
+            text: "V-SCREEN";
+            active: root.vertical;
+            show_dot: true;
+            dot_color: root.vertical ? #00ff88 : #334155;
+            clicked => { root.set_vertical(!root.vertical); }
+        }
+        CyberButton {
+            text: "ANTI-FLICKER";
+            active: root.anti_flicker;
+            show_dot: true;
+            dot_color: root.anti_flicker ? #00ff88 : #334155;
+            clicked => { root.set_anti_flicker(!root.anti_flicker); }
+        }
+
+        Rectangle { height: 1px; background: #1f2533; }
+
+        Text {
+            text: "BRIGHTNESS";
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            color: #64748b;
+        }
+
+        Rectangle {
+            height: 30px;
+            background: #12151c;
+            border-color: #1f2533;
+            border-width: 1px;
+            border-radius: 4px;
+
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 8px;
+
+                Text {
+                    text: root.brightness_min;
+                    font-size: 9px;
+                    color: #64748b;
+                    vertical-alignment: center;
+                }
+                Slider {
+                    minimum: root.brightness_min;
+                    maximum: root.brightness_max;
+                    value: root.brightness;
+                    horizontal-stretch: 1;
+                    changed(v) => { root.set_brightness(round(v)); }
+                }
+                Text {
+                    text: root.brightness;
+                    font-size: 9px;
+                    font-weight: 700;
+                    color: #00f0ff;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        if root.error_text != "": Text {
+            text: root.error_text;
+            font-size: 9px;
+            color: #ff0055;
+            wrap: word-wrap;
+        }
+
+        // Pushes the controls to the top; keeps the panel small.
+        Rectangle { vertical-stretch: 1; background: transparent; }
+    }
+}
+
 export component MainWindow inherits Window {
     title: "Frameiru // Neural Segmentation Studio";
     preferred-width: 1040px;
@@ -196,6 +375,18 @@ export component MainWindow inherits Window {
     // Live telemetry
     in-out property <string> fps_text: "0.0";
     in-out property <string> latency_text: "0.0ms";
+    // Webcam drawer (Anker C200 only)
+    in-out property <bool> webcam_available: false;
+    in-out property <bool> webcam_drawer_open: false;
+    in-out property <string> webcam_fov: "wide";
+    in-out property <bool> webcam_hdr: false;
+    in-out property <bool> webcam_flip: false;
+    in-out property <bool> webcam_vertical: false;
+    in-out property <bool> webcam_anti_flicker: false;
+    in-out property <int> webcam_brightness: 128;
+    in-out property <int> webcam_brightness_min: 0;
+    in-out property <int> webcam_brightness_max: 255;
+    in-out property <string> webcam_error: "";
 
     callback start_pipeline();
     callback stop_pipeline();
@@ -204,6 +395,12 @@ export component MainWindow inherits Window {
     callback set_blur(float);
     callback set_color(string);
     callback pick_image();
+    callback webcam_set_fov(string);
+    callback webcam_set_hdr(bool);
+    callback webcam_set_flip(bool);
+    callback webcam_set_vertical(bool);
+    callback webcam_set_anti_flicker(bool);
+    callback webcam_set_brightness(int);
 
     // Chassis Container
     Rectangle {
@@ -442,6 +639,34 @@ export component MainWindow inherits Window {
                         }
                     }
                 }
+
+                // Webcam control drawer (visible only for Anker C200 devices)
+                WebcamDrawer {
+                    open: root.webcam_drawer_open;
+                    x: root.webcam_drawer_open ? parent.width - self.width : parent.width;
+                    y: 0px;
+                    width: 240px;
+                    height: parent.height;
+                    fov: root.webcam_fov;
+                    hdr: root.webcam_hdr;
+                    flip: root.webcam_flip;
+                    vertical: root.webcam_vertical;
+                    anti_flicker: root.webcam_anti_flicker;
+                    brightness: root.webcam_brightness;
+                    brightness_min: root.webcam_brightness_min;
+                    brightness_max: root.webcam_brightness_max;
+                    error_text: root.webcam_error;
+                    set_fov(v) => {
+                        root.webcam_fov = v;
+                        root.webcam_set_fov(v);
+                    }
+                    set_hdr(v) => { root.webcam_hdr = v; root.webcam_set_hdr(v); }
+                    set_flip(v) => { root.webcam_flip = v; root.webcam_set_flip(v); }
+                    set_vertical(v) => { root.webcam_vertical = v; root.webcam_set_vertical(v); }
+                    set_anti_flicker(v) => { root.webcam_anti_flicker = v; root.webcam_set_anti_flicker(v); }
+                    set_brightness(v) => { root.webcam_brightness = v; root.webcam_set_brightness(v); }
+                    close() => { root.webcam_drawer_open = false; }
+                }
             }
 
             // ==========================================
@@ -492,6 +717,17 @@ export component MainWindow inherits Window {
                                 } else {
                                     root.start_pipeline();
                                 }
+                            }
+                        }
+
+                        if root.webcam_available: CyberButton {
+                            text: root.webcam_drawer_open ? "C200: HIDE" : "C200: CONTROL";
+                            active: root.webcam_drawer_open;
+                            btn_min_width: 104px;
+                            show_dot: true;
+                            dot_color: root.webcam_drawer_open ? #00f0ff : #334155;
+                            clicked => {
+                                root.webcam_drawer_open = !root.webcam_drawer_open;
                             }
                         }
                     }

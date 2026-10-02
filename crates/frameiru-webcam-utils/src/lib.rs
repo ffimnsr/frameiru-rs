@@ -8,6 +8,7 @@
 //! README of `erans/anker-powerconf-c200-linux-tools` for protocol details.
 
 pub mod controls;
+pub mod detect;
 pub mod fov;
 pub mod v4l2;
 pub mod vendor;

@@ -213,4 +213,3 @@ fn embedded_model_segments_a_frame() {
     let mask_roi = seg_roi.segment(&frame).expect("roi pass 2");
     assert_eq!(mask_roi.resolution, frame.metadata.resolution);
 }
-
