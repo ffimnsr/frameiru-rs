@@ -1,0 +1,13 @@
+[package]
+name = "frameiru-webcam-utils"
+description = "CLI utilities to control an Anker PowerConf C200 webcam via vendor UVC extension unit and standard V4L2 controls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive"] }
+nix.workspace = true
+thiserror.workspace = true

@@ -8,6 +8,7 @@ members = [
     "crates/frameiru-sink",
     "crates/frameiru-ipc",
     "crates/frameiru-pipeline",
+    "crates/frameiru-webcam-utils",
     "crates/frameiru-cli",
     "crates/frameiru-ui",
 ]
@@ -43,3 +44,6 @@ serde_json = "1.0"
 
 # CLI
 clap = { version = "4.5", features = ["derive"] }
+
+# Linux ioctls (UVCIOC_CTRL_QUERY, VIDIOC_G/S_CTRL)
+nix = { version = "0.31", features = ["ioctl"] }

@@ -12,19 +12,17 @@ use frameiru_core::format::{PixelFormat, Resolution};
 use frameiru_core::traits::Segmenter;
 use frameiru_core::FrameBuffer;
 use ort::session::Session;
-use ort::value::{Tensor, TensorValueType};
+use ort::value::TensorValueType;
 
 use crate::guided_filter::{DEFAULT_GUIDED_EPS, DEFAULT_GUIDED_RADIUS};
 use crate::postprocess::{postprocess_mask, postprocess_mask_refined};
 use crate::preprocess::{preprocess_rgb8, Normalization};
 
 /// Bytes of the embedded MediaPipe selfie model (~462 KB).
-pub const MEDIAPIPE_MODEL_BYTES: &[u8] =
-    include_bytes!("../assets/selfie_segmentation.onnx");
+pub const MEDIAPIPE_MODEL_BYTES: &[u8] = include_bytes!("../assets/selfie_segmentation.onnx");
 
 /// Bytes of the embedded RVM MobileNetV3 model (~15 MB).
-pub const RVM_MODEL_BYTES: &[u8] =
-    include_bytes!("../assets/rvm_mobilenetv3_fp32.onnx");
+pub const RVM_MODEL_BYTES: &[u8] = include_bytes!("../assets/rvm_mobilenetv3_fp32.onnx");
 
 /// Default embedded primary bytes (MediaPipe anchor).
 pub const EMBEDDED_MODEL_BYTES: &[u8] = MEDIAPIPE_MODEL_BYTES;
@@ -71,6 +69,10 @@ pub struct OnnxConfig {
     /// collapses ghosting mid-alphas toward 0/1 (less "partially-sharp"
     /// fringe). `0.0` disables.
     pub mask_contrast: f32,
+    /// Dynamic crop & track (ROI zoom) around the subject. Off by default
+    /// because cropping to a bounding box causes delay and boundary clipping
+    /// during rapid movement.
+    pub roi_zoom: bool,
 }
 
 impl OnnxConfig {
@@ -91,6 +93,7 @@ impl OnnxConfig {
             intra_threads: None,
             mask_dilate: 0,
             mask_contrast: 0.0,
+            roi_zoom: false,
         })
     }
 }
@@ -307,7 +310,7 @@ impl Segmenter for OnnxSegmenter {
             data: data[data.len() - area..].to_vec(),
         };
 
-        let mut out = Mask::filled(frame.metadata.resolution, 0.0);
+        let mut out = Mask::default();
         if self.config.refine_mask {
             postprocess_mask_refined(
                 &model_mask,
@@ -328,7 +331,6 @@ impl Segmenter for OnnxSegmenter {
 
 /// Hidden-state channel counts for the RVM MobileNetV3 export (official
 /// `rvm_mobilenetv3_fp32.onnx`: `r1i..r4i` of `(1, dim, 1, 1)`).
-const RVM_STATE_DIMS: [i64; 4] = [16, 20, 40, 64];
 const RVM_STATE_INPUTS: [&str; 4] = ["r1i", "r2i", "r3i", "r4i"];
 const RVM_STATE_OUTPUTS: [&str; 4] = ["r1o", "r2o", "r3o", "r4o"];
 
@@ -349,6 +351,8 @@ pub struct RvmSegmenter {
     /// Scalar control input (`downsample_ratio`): 1.0 at 256x256.
     ratio_input: Option<String>,
     states: [Option<(Vec<usize>, Vec<f32>)>; 4],
+    zero_states: [(Vec<usize>, Vec<f32>); 4],
+    tensor_buf: Vec<f32>,
 }
 
 impl RvmSegmenter {
@@ -414,6 +418,12 @@ impl RvmSegmenter {
             .map(|o| o.name().to_string());
 
         let states = [None, None, None, None];
+        let zero_states = [
+            (vec![1, 16, 1, 1], vec![0f32; 16]),
+            (vec![1, 20, 1, 1], vec![0f32; 20]),
+            (vec![1, 40, 1, 1], vec![0f32; 40]),
+            (vec![1, 64, 1, 1], vec![0f32; 64]),
+        ];
         tracing::info!(
             "RVM resolved: src '{input_name}', pha '{output_name}', states {state_inputs:?} -> {state_outputs:?}"
         );
@@ -426,6 +436,8 @@ impl RvmSegmenter {
             output_name,
             ratio_input,
             states,
+            zero_states,
+            tensor_buf: Vec::new(),
         })
     }
 
@@ -462,65 +474,80 @@ impl Segmenter for RvmSegmenter {
         );
         let area = iw * ih;
 
-        let mut tensor = vec![0f32; 3 * area];
+        self.tensor_buf.resize(3 * area, 0.0);
         let letterbox = preprocess_rgb8(
             &frame.data,
             frame.metadata.resolution,
             self.config.input_size,
             self.config.normalization,
-            &mut tensor,
+            &mut self.tensor_buf,
         )?;
 
-        let src = Tensor::<f32>::from_array(([1usize, 3, ih, iw], tensor))
-            .map_err(|e| FrameiruError::Segmentation(format!("tensor build failed: {e}")))?;
-        let state_tensors = self
-            .states
-            .iter()
-            .zip(RVM_STATE_DIMS)
-            .map(|(state, dim)| match state {
-                Some((shape, data)) => {
-                    Tensor::<f32>::from_array((shape.as_slice(), data.clone()))
-                        .map_err(|e| FrameiruError::Segmentation(format!("state tensor failed: {e}")))
-                }
-                None => {
-                    Tensor::<f32>::from_array(([1usize, dim as usize, 1, 1], vec![0f32; dim as usize]))
-                        .map_err(|e| FrameiruError::Segmentation(format!("state tensor failed: {e}")))
-                }
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let src = ort::value::TensorRef::<f32>::from_array_view((
+            [1usize, 3, ih, iw],
+            self.tensor_buf.as_slice(),
+        ))
+        .map_err(|e| FrameiruError::Segmentation(format!("tensor build failed: {e}")))?;
 
-        let input_name = self.input_name.clone();
-        let s0 = self.state_inputs[0].clone();
-        let s1 = self.state_inputs[1].clone();
-        let s2 = self.state_inputs[2].clone();
-        let s3 = self.state_inputs[3].clone();
+        let s0_view = match &self.states[0] {
+            Some((shape, data)) => (shape.as_slice(), data.as_slice()),
+            None => (self.zero_states[0].0.as_slice(), self.zero_states[0].1.as_slice()),
+        };
+        let s0 = ort::value::TensorRef::<f32>::from_array_view(s0_view)
+            .map_err(|e| FrameiruError::Segmentation(format!("state tensor failed: {e}")))?;
+
+        let s1_view = match &self.states[1] {
+            Some((shape, data)) => (shape.as_slice(), data.as_slice()),
+            None => (self.zero_states[1].0.as_slice(), self.zero_states[1].1.as_slice()),
+        };
+        let s1 = ort::value::TensorRef::<f32>::from_array_view(s1_view)
+            .map_err(|e| FrameiruError::Segmentation(format!("state tensor failed: {e}")))?;
+
+        let s2_view = match &self.states[2] {
+            Some((shape, data)) => (shape.as_slice(), data.as_slice()),
+            None => (self.zero_states[2].0.as_slice(), self.zero_states[2].1.as_slice()),
+        };
+        let s2 = ort::value::TensorRef::<f32>::from_array_view(s2_view)
+            .map_err(|e| FrameiruError::Segmentation(format!("state tensor failed: {e}")))?;
+
+        let s3_view = match &self.states[3] {
+            Some((shape, data)) => (shape.as_slice(), data.as_slice()),
+            None => (self.zero_states[3].0.as_slice(), self.zero_states[3].1.as_slice()),
+        };
+        let s3 = ort::value::TensorRef::<f32>::from_array_view(s3_view)
+            .map_err(|e| FrameiruError::Segmentation(format!("state tensor failed: {e}")))?;
+
+        let in_name = self.input_name.as_str();
+        let s0_name = self.state_inputs[0].as_str();
+        let s1_name = self.state_inputs[1].as_str();
+        let s2_name = self.state_inputs[2].as_str();
+        let s3_name = self.state_inputs[3].as_str();
+
         let outputs = match &self.ratio_input {
             Some(ratio_name) => {
-                let ratio = Tensor::<f32>::from_array(([1usize], vec![1.0f32])).map_err(|e| {
-                    FrameiruError::Segmentation(format!("ratio tensor failed: {e}"))
-                })?;
-                let ratio_name = ratio_name.clone();
+                let ratio = ort::value::TensorRef::<f32>::from_array_view(([1usize], &[1.0f32][..]))
+                    .map_err(|e| FrameiruError::Segmentation(format!("ratio tensor failed: {e}")))?;
                 self.session
                     .run(ort::inputs! {
-                        input_name => src,
-                        s0 => state_tensors[0].clone(),
-                        s1 => state_tensors[1].clone(),
-                        s2 => state_tensors[2].clone(),
-                        s3 => state_tensors[3].clone(),
-                        ratio_name => ratio,
+                        in_name => src,
+                        s0_name => s0,
+                        s1_name => s1,
+                        s2_name => s2,
+                        s3_name => s3,
+                        ratio_name.as_str() => ratio,
                     })
                     .map_err(|e| FrameiruError::Segmentation(format!("inference failed: {e}")))?
             }
             None => self
                 .session
                 .run(ort::inputs! {
-                    input_name => src,
-                    s0 => state_tensors[0].clone(),
-                    s1 => state_tensors[1].clone(),
-                    s2 => state_tensors[2].clone(),
-                    s3 => state_tensors[3].clone(),
+                    in_name => src,
+                    s0_name => s0,
+                    s1_name => s1,
+                    s2_name => s2,
+                    s3_name => s3,
                 })
-                .map_err(|e| FrameiruError::Segmentation(format!("inference failed: {e}")))?,
+                .map_err(|e| FrameiruError::Segmentation(format!("inference failed: {e}")))?
         };
 
         let mask_val = outputs.get(self.output_name.as_str()).ok_or_else(|| {
@@ -601,9 +628,9 @@ pub fn load_model(
 /// Loads the embedded default model (RVM MobileNetV3, 256x256) with
 /// `config` — zero-setup segmentation; the model ships inside the binary.
 pub fn load_embedded(config: OnnxConfig) -> Result<Box<dyn Segmenter>, FrameiruError> {
-    Ok(Box::new(crate::fusion::FusionSegmenter::load_embedded(
-        config.intra_threads,
-    )?))
+    let mut fusion = crate::fusion::FusionSegmenter::load_embedded(config.intra_threads)?;
+    fusion.set_roi_zoom(config.roi_zoom);
+    Ok(Box::new(fusion))
 }
 
 #[cfg(test)]
@@ -648,5 +675,6 @@ mod tests {
         assert!(config.refine_mask);
         assert_eq!(config.mask_dilate, 0);
         assert_eq!(config.guided_eps, DEFAULT_GUIDED_EPS);
+        assert!(!config.roi_zoom);
     }
 }

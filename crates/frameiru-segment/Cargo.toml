@@ -25,3 +25,7 @@ fast_image_resize = "6"
 # ort's process-global cpuinfo/env init races under the parallel test
 # harness; real-model integration tests run serially.
 serial_test = "3"
+
+[[example]]
+name = "time_segment"
+required-features = ["onnx"]

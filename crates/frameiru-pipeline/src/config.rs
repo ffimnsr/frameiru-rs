@@ -42,7 +42,7 @@ impl Default for PipelineConfig {
             max_fps: 30,
             mask_alpha: None,
             infer_max_fps: 30,
-            infer_motion_threshold: 2.0,
+            infer_motion_threshold: 1.0,
             compose_idle_threshold: 1.0,
             subject_light: 0.0,
         }

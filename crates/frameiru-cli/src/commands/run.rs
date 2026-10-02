@@ -195,6 +195,7 @@ fn build_segmenter(args: &RunArgs) -> anyhow::Result<Option<Box<dyn Segmenter>>>
         config.refine_mask = !args.no_refine_mask;
         config.mask_dilate = args.mask_dilate;
         config.mask_contrast = super::parse_mask_contrast(&args.mask_contrast)?;
+        config.roi_zoom = args.roi_zoom;
         Ok(Some(load_embedded(config)?))
     }
     #[cfg(not(feature = "onnx"))]

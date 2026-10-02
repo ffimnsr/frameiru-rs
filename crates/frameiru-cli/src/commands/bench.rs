@@ -26,8 +26,11 @@ pub struct BenchArgs {
     #[arg(long, default_value = "imagenet")]
     pub normalization: String,
     /// Mask EMA blending factor: `off`, or 0.0 (freeze) ..= 1.0.
-    #[arg(long, default_value = "0.5")]
+    #[arg(long, default_value = "off")]
     pub mask_alpha: String,
+    /// Dynamic crop & track (ROI zoom) around the subject.
+    #[arg(long)]
+    pub roi_zoom: bool,
     /// Background used for compositing.
     #[arg(long, default_value = "color:0,120,0")]
     pub background: String,
@@ -64,6 +67,7 @@ pub fn benchmark(args: BenchArgs) -> anyhow::Result<()> {
             config.refine_mask = false;
             config.mask_dilate = 0;
             config.mask_contrast = 0.0;
+            config.roi_zoom = args.roi_zoom;
             if args.threads == Some(0) {
                 anyhow::bail!("--threads must be >= 1 (omit it for the physical-core default)");
             }

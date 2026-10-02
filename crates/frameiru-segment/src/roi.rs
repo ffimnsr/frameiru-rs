@@ -249,7 +249,11 @@ pub fn paste_mask_roi(full_mask: &mut Mask, roi_mask: &Mask, roi: RoiRect) {
 
     let rw = roi.width;
     let rh = roi.height;
-    let feather = if rw > 16 && rh > 16 { 12usize.min(rw / 8).min(rh / 8) } else { 0 };
+    let feather = if rw > 16 && rh > 16 {
+        12usize.min(rw / 8).min(rh / 8)
+    } else {
+        0
+    };
 
     for row in 0..rh {
         if roi.y + row >= full_h {

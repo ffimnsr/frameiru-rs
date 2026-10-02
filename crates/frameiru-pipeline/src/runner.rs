@@ -111,7 +111,12 @@ pub(crate) fn spawn_inference(
             let mut last_drops = 0u64;
             while !shared.stop.load(Ordering::Relaxed) {
                 match input_rx.recv_timeout(STOP_POLL) {
-                    Ok(frame) => {
+                    Ok(mut frame) => {
+                        // Drain any newer frames queued while inference was busy:
+                        // inference must always operate on the most recently captured frame.
+                        while let Ok(newer) = input_rx.try_recv() {
+                            frame = newer;
+                        }
                         // Dropped capture frames mean the video skipped a
                         // discontinuity: recurrent models and the EMA must
                         // reset so neither can ghost across it.
@@ -174,11 +179,14 @@ pub(crate) fn spawn_compose(
             let mut last_bg: Option<BackgroundMode> = None;
             let mut bg_dirty = true;
             while !shared.stop.load(Ordering::Relaxed) {
-                let frame = match input_rx.recv_timeout(STOP_POLL) {
+                let mut frame = match input_rx.recv_timeout(STOP_POLL) {
                     Ok(frame) => frame,
                     Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
                     Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
                 };
+                while let Ok(newer) = input_rx.try_recv() {
+                    frame = newer;
+                }
 
                 // Apply any pending background changes before this frame.
                 while let Ok(mode) = shared.mode_rx.try_recv() {

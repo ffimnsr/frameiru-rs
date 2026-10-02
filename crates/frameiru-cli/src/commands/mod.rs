@@ -58,9 +58,14 @@ pub struct RunArgs {
     #[arg(long, default_value = "imagenet")]
     pub normalization: String,
     /// Mask EMA blending factor: `off`, or 0.0 (freeze) ..= 1.0 (no
-    /// smoothing). Default 0.5 counters flicker and low mask rates.
-    #[arg(long, default_value = "0.5")]
+    /// smoothing). Default `off` for instant motion tracking without trailing blur delay.
+    #[arg(long, default_value = "off")]
     pub mask_alpha: String,
+    /// Dynamic crop & track (ROI zoom) around the subject. Off by default
+    /// because cropping to a bounding box causes delay and boundary clipping
+    /// during rapid movement.
+    #[arg(long)]
+    pub roi_zoom: bool,
     /// Cap on segmentation rate; static scenes skip inference entirely
     /// (motion overrides the cap at half the interval). 0 = every frame.
     #[arg(long, default_value_t = 30)]

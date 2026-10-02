@@ -57,14 +57,44 @@ fn crop_and_upsample(
     out.resize(fx * fy, 0.0);
 
     let (ox, oy) = (letterbox.pad_x as usize, letterbox.pad_y as usize);
+    let ox_f = ox as f32;
+    let oy_f = oy as f32;
+    let inv_fx = iw as f32 / fx as f32;
+    let inv_fy = ih as f32 / fy as f32;
+
+    let mut x_table = Vec::with_capacity(fx);
+    for x in 0..fx {
+        let s = (x as f32 + 0.5) * inv_fx - 0.5;
+        let sx = ox_f + s.clamp(0.0, (iw.saturating_sub(1)) as f32);
+        let x0 = sx.floor().min((mw.saturating_sub(1)) as f32) as usize;
+        let x1 = (x0 + 1).min(mw.saturating_sub(1));
+        let weight_x = sx - x0 as f32;
+        x_table.push((x0, x1, weight_x));
+    }
+
+    let src = &model_mask.data;
+    let max_y = (src.len() / mw).saturating_sub(1);
+
     for y in 0..fy {
-        for x in 0..fx {
-            // Sample the inner region using the same texel-center mapping as
-            // preprocessing, so resize round-trips are stable.
-            let sx = sample_coord(x as f32, fx as f32, iw as f32);
-            let sy = sample_coord(y as f32, fy as f32, ih as f32);
-            out[y * fx + x] =
-                bilinear_sample_f32(&model_mask.data, mw, ox as f32 + sx, oy as f32 + sy);
+        let s = (y as f32 + 0.5) * inv_fy - 0.5;
+        let sy = oy_f + s.clamp(0.0, (ih.saturating_sub(1)) as f32);
+        let y0 = (sy.floor() as usize).min(max_y);
+        let y1 = (y0 + 1).min(max_y);
+        let weight_y = sy - y0 as f32;
+
+        let row0 = &src[y0 * mw..];
+        let row1 = &src[y1 * mw..];
+        let out_row = &mut out[y * fx..(y + 1) * fx];
+
+        for (out_val, &(x0, x1, weight_x)) in out_row.iter_mut().zip(&x_table) {
+            let p00 = row0[x0];
+            let p10 = row0[x1];
+            let p01 = row1[x0];
+            let p11 = row1[x1];
+
+            let top = p00 + (p10 - p00) * weight_x;
+            let bottom = p01 + (p11 - p01) * weight_x;
+            *out_val = top + (bottom - top) * weight_y;
         }
     }
     Ok(())
@@ -127,31 +157,7 @@ pub fn postprocess_mask_refined(
     Ok(())
 }
 
-/// Maps a destination pixel to a source coordinate (texel-center convention),
-/// clamped to the source edge.
-fn sample_coord(dst: f32, dst_size: f32, src_size: f32) -> f32 {
-    let s = (dst + 0.5) * (src_size / dst_size) - 0.5;
-    s.clamp(0.0, src_size - 1.0)
-}
 
-/// Bilinear sample of a f32 mask row at `sx`/`sy` (absolute, pre-clamped).
-fn bilinear_sample_f32(src: &[f32], row_stride: usize, sx: f32, sy: f32) -> f32 {
-    let x0 = sx.floor().min((row_stride - 1) as f32) as usize;
-    let y0 = sy.floor() as usize;
-    let x1 = (x0 + 1).min(row_stride - 1);
-    let y1 = (y0 + 1).min(src.len() / row_stride - 1);
-    let fx = sx - x0 as f32;
-    let fy = sy - y0 as f32;
-
-    let p00 = src[y0 * row_stride + x0];
-    let p10 = src[y0 * row_stride + x1];
-    let p01 = src[y1 * row_stride + x0];
-    let p11 = src[y1 * row_stride + x1];
-
-    let top = p00 + (p10 - p00) * fx;
-    let bottom = p01 + (p11 - p01) * fx;
-    top + (bottom - top) * fy
-}
 
 #[cfg(test)]
 mod tests {

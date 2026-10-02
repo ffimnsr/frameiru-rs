@@ -184,7 +184,9 @@ fn embedded_model_segments_a_frame() {
     let mut seg = load_embedded(config).expect("embedded model must load");
     assert_eq!(seg.input_resolution(), EMBEDDED_MODEL_INPUT);
     let frame = frame_with_edge(240, (255, 255, 255), (0, 0, 0));
-    let mask = seg.segment(&frame).expect("segment with embedded model (full-frame pass)");
+    let mask = seg
+        .segment(&frame)
+        .expect("segment with embedded model (full-frame pass)");
     assert_eq!(mask.resolution, frame.metadata.resolution);
     assert_eq!(mask.data.len(), (FRAME.0 * FRAME.1) as usize);
     assert!(
@@ -192,12 +194,23 @@ fn embedded_model_segments_a_frame() {
         "mask values must stay in [0, 1]"
     );
 
-    // Consecutive frame: exercises Dynamic ROI Zoom tracking on the discovered subject
-    let mask2 = seg.segment(&frame).expect("segment with embedded model (roi-zoom pass)");
+    // Consecutive frame: full-frame pass without ROI zoom
+    let mask2 = seg
+        .segment(&frame)
+        .expect("segment with embedded model (consecutive pass)");
     assert_eq!(mask2.resolution, frame.metadata.resolution);
     assert_eq!(mask2.data.len(), (FRAME.0 * FRAME.1) as usize);
     assert!(
         mask2.data.iter().all(|&v| (0.0..=1.0).contains(&v)),
         "mask values must stay in [0, 1]"
     );
+
+    // Optional ROI Zoom mode when explicitly enabled
+    let mut config_roi = OnnxConfig::new(EMBEDDED_MODEL_INPUT).unwrap();
+    config_roi.roi_zoom = true;
+    let mut seg_roi = load_embedded(config_roi).expect("embedded model with roi zoom");
+    let _ = seg_roi.segment(&frame).expect("roi pass 1");
+    let mask_roi = seg_roi.segment(&frame).expect("roi pass 2");
+    assert_eq!(mask_roi.resolution, frame.metadata.resolution);
 }
+

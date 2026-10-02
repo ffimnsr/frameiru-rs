@@ -42,7 +42,7 @@ impl Engine {
         let subject_light = config.subject_light;
 
         let (capture_tx, capture_rx) = bounded::<FrameBuffer>(config.channel_capacity);
-        let (infer_tx, infer_rx) = bounded::<FrameBuffer>(1);
+        let (infer_tx, infer_rx) = bounded::<FrameBuffer>(config.channel_capacity.max(4));
         let (mode_tx, mode_rx) = bounded::<BackgroundMode>(1);
         let (preview_tx, _) = broadcast::channel::<Arc<FrameBuffer>>(config.preview_capacity);
         let stop = Arc::new(AtomicBool::new(false));
