@@ -11,7 +11,7 @@ use std::sync::Arc;
 use anyhow::{bail, Context as _};
 use frameiru_core::format::Resolution;
 use frameiru_core::traits::{FrameSink, FrameSource, Segmenter};
-use frameiru_core::{BackgroundMode, FrameBuffer};
+use frameiru_core::{BackgroundMode, FrameBuffer, OverlayMode};
 use frameiru_pipeline::{Engine, PipelineConfig};
 use frameiru_webcam_utils::controls::{
     find_control, format_bool, parse_bool, ControlInfo, ControlKind,
@@ -314,6 +314,23 @@ impl App {
                 Self::set_background(&a, BackgroundMode::Image { path });
             }
         });
+
+        let a = app.clone();
+        app.borrow().window.on_pick_video(move || {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("videos", &["mp4", "webm", "mov", "mkv"])
+                .pick_file()
+            {
+                Self::set_background(&a, BackgroundMode::Video { path });
+            }
+        });
+
+        let a = app.clone();
+        app.borrow().window.on_set_overlay(move |name| {
+            if let Some(mode) = parse_overlay(name.as_str()) {
+                Self::set_overlay(&a, mode);
+            }
+        });
     }
 
     fn set_background(app: &Rc<RefCell<App>>, mode: BackgroundMode) {
@@ -321,6 +338,15 @@ impl App {
         if let Some(engine) = &app.engine {
             if let Err(e) = engine.handle().update_background(mode) {
                 eprintln!("background update rejected: {e}");
+            }
+        }
+    }
+
+    fn set_overlay(app: &Rc<RefCell<App>>, mode: OverlayMode) {
+        let app = app.borrow();
+        if let Some(engine) = &app.engine {
+            if let Err(e) = engine.handle().update_overlay(mode) {
+                eprintln!("overlay update rejected: {e}");
             }
         }
     }
@@ -371,6 +397,17 @@ impl App {
             Ok(engine) => {
                 let rx = engine.handle().subscribe();
                 let handle = engine.handle();
+                // Every start defaults the effect to passthrough.
+                if let Err(e) = handle.update_background(BackgroundMode::Passthrough) {
+                    eprintln!("passthrough default rejected: {e}");
+                }
+                app.window.set_active_effect("passthrough".into());
+                // Re-apply the selected overlay (the engine starts with none).
+                if let Some(overlay) = parse_overlay(&app.window.get_overlay_effect()) {
+                    handle.update_overlay(overlay).unwrap_or_else(|e| {
+                        eprintln!("overlay apply after start rejected: {e}");
+                    });
+                }
                 app.window.set_is_running(true);
                 app.window.set_error_text("".into());
                 Self::pump_preview(app.window.as_weak(), rx, handle);
@@ -671,9 +708,30 @@ pub fn parse_hex_color(hex: &str) -> Result<(u8, u8, u8), String> {
     Ok((channels[0], channels[1], channels[2]))
 }
 
+/// Maps the overlay button name to its mode; unknown names yield `None`.
+fn parse_overlay(name: &str) -> Option<OverlayMode> {
+    match name {
+        "none" => Some(OverlayMode::None),
+        "scanlines" => Some(OverlayMode::Scanlines),
+        "light_leak" => Some(OverlayMode::LightLeak),
+        "crt" => Some(OverlayMode::Crt),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_overlay_names() {
+        assert_eq!(parse_overlay("none"), Some(OverlayMode::None));
+        assert_eq!(parse_overlay("scanlines"), Some(OverlayMode::Scanlines));
+        assert_eq!(parse_overlay("light_leak"), Some(OverlayMode::LightLeak));
+        assert_eq!(parse_overlay("crt"), Some(OverlayMode::Crt));
+        assert_eq!(parse_overlay("banana"), None);
+        assert_eq!(parse_overlay(""), None);
+    }
 
     #[test]
     fn parses_hex_colors() {

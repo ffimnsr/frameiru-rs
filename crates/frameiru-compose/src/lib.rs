@@ -6,6 +6,7 @@
 
 pub mod cpu;
 pub mod mode;
+pub mod video;
 
 #[cfg(feature = "gpu")]
 pub mod gpu;

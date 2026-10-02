@@ -371,7 +371,9 @@ export component MainWindow inherits Window {
     // Background controls
     in-out property <float> blur_radius: 8;
     in-out property <string> model_name: "Fusion: MediaPipe + RVM (embedded)";
-    in-out property <string> active_effect: "blur";
+    in-out property <string> active_effect: "passthrough";
+    // Full-frame overlay (independent of the background effect)
+    in-out property <string> overlay_effect: "none";
     // Live telemetry
     in-out property <string> fps_text: "0.0";
     in-out property <string> latency_text: "0.0ms";
@@ -395,6 +397,8 @@ export component MainWindow inherits Window {
     callback set_blur(float);
     callback set_color(string);
     callback pick_image();
+    callback pick_video();
+    callback set_overlay(string);
     callback webcam_set_fov(string);
     callback webcam_set_hdr(bool);
     callback webcam_set_flip(bool);
@@ -608,35 +612,6 @@ export component MainWindow inherits Window {
                                 }
                             }
                         }
-
-                        // Model Status Badge
-                        Rectangle {
-                            background: #07080ae0;
-                            border-color: #1f2533;
-                            border-width: 1px;
-                            border-radius: 4px;
-                            height: 26px;
-
-                            HorizontalLayout {
-                                padding-left: 8px;
-                                padding-right: 8px;
-                                spacing: 6px;
-
-                                Text {
-                                    text: "MATTE ENGINE:";
-                                    font-size: 10px;
-                                    color: #64748b;
-                                    vertical-alignment: center;
-                                }
-                                Text {
-                                    text: root.is_running ? "FUSION [MP+RVM] ACTIVE" : "STANDBY";
-                                    font-size: 10px;
-                                    font-weight: 700;
-                                    color: root.is_running ? #00ff88 : #64748b;
-                                    vertical-alignment: center;
-                                }
-                            }
-                        }
                     }
                 }
 
@@ -813,6 +788,15 @@ export component MainWindow inherits Window {
                                 root.pick_image();
                             }
                         }
+
+                        CyberButton {
+                            text: "Virtual Video...";
+                            active: root.active_effect == "video";
+                            clicked => {
+                                root.active_effect = "video";
+                                root.pick_video();
+                            }
+                        }
                     }
 
                     // Row 3: Solid Colors
@@ -878,7 +862,59 @@ export component MainWindow inherits Window {
                         }
                     }
 
-                    // Row 4: Status Telemetry Footer
+                    // Row 4: Overlay Effects
+                    HorizontalLayout {
+                        spacing: 12px;
+
+                        Text {
+                            text: "OVERLAY:";
+                            font-size: 11px;
+                            font-weight: 700;
+                            letter-spacing: 1px;
+                            color: #00f0ff;
+                            vertical-alignment: center;
+                        }
+
+                        CyberButton {
+                            text: "None";
+                            active: root.overlay_effect == "none";
+                            clicked => {
+                                root.overlay_effect = "none";
+                                root.set_overlay("none");
+                            }
+                        }
+
+                        CyberButton {
+                            text: "Scanlines";
+                            active: root.overlay_effect == "scanlines";
+                            clicked => {
+                                root.overlay_effect = "scanlines";
+                                root.set_overlay("scanlines");
+                            }
+                        }
+
+                        CyberButton {
+                            text: "Light Leak";
+                            active: root.overlay_effect == "light_leak";
+                            clicked => {
+                                root.overlay_effect = "light_leak";
+                                root.set_overlay("light_leak");
+                            }
+                        }
+
+                        CyberButton {
+                            text: "CRT";
+                            active: root.overlay_effect == "crt";
+                            clicked => {
+                                root.overlay_effect = "crt";
+                                root.set_overlay("crt");
+                            }
+                        }
+
+                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                    }
+
+                    // Row 5: Status Telemetry Footer
                     HorizontalLayout {
                         alignment: space-between;
 

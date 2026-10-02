@@ -6,9 +6,13 @@
 /// (color mode), or the user image (image mode); sampling handles scaling.
 pub const COMPOSITE_WGSL: &str = r#"
 struct Globals {
-    // x: light-wrap strength (0 = off; 0.5 for image backgrounds)
-    // y: subject fill light (0 = off; lifts the subject toward white)
+    // g.xy: light-wrap strength (0 = off; 0.5 for image/video backgrounds)
+    //       and subject fill light (0 = off; lifts the subject toward white)
+    // g.z:  overlay mode (0 off, 1 scanlines, 2 light leak, 3 CRT)
+    // g.w:  time in seconds (overlay animation phase)
+    // g2.xy: frame size in pixels (overlay coordinates)
     g: vec4<f32>,
+    g2: vec4<f32>,
 }
 
 @group(0) @binding(0) var fg_tex: texture_2d<f32>;
@@ -52,7 +56,37 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     let blended = mix(bg, fgw, m);
     // Subject fill light: lift the (masked) subject toward white.
     let lit = blended + globals.g.y * m * (vec4<f32>(1.0, 1.0, 1.0, 1.0) - blended);
-    return vec4<f32>(lit.rgb, 1.0);
+
+    // Full-frame overlay pass (mirrors the CPU compositor's formulas).
+    let ov = globals.g.z;
+    let t = globals.g.w;
+    let px = vec2<f32>(in.uv.x * globals.g2.x, in.uv.y * globals.g2.y);
+    var out_c = lit.rgb;
+    if (ov == 1.0) {
+        if (fract(px.y * 0.5) >= 0.5) {
+            out_c *= 0.88;
+        }
+    } else if (ov == 2.0) {
+        let cx = (0.5 + 0.35 * sin(t * 0.7)) * globals.g2.x;
+        let cy = (0.25 + 0.2 * sin(t * 0.9 + 1.3)) * globals.g2.y;
+        let d2 = distance(px, vec2<f32>(cx, cy));
+        let r = max(globals.g2.x, globals.g2.y) * 0.65;
+        if (d2 < r) {
+            let blob = 1.0 - d2 / r;
+            let k = blob * blob * 0.35;
+            out_c += vec3<f32>(255.0, 178.0, 89.0) * k;
+        }
+    } else if (ov == 3.0) {
+        if (fract(px.y * 0.5) >= 0.5) {
+            out_c *= 0.8;
+        }
+        let rx = in.uv.x - 0.5;
+        let ry = in.uv.y - 0.5;
+        let vignette = max(1.0 - 0.9 * (rx * rx + ry * ry), 0.0);
+        out_c *= vignette;
+        out_c *= 1.0 + 0.04 * sin(t * 12.0);
+    }
+    return vec4<f32>(out_c, 1.0);
 }
 "#;
 

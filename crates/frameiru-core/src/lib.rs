@@ -20,6 +20,6 @@ pub mod slint_compat;
 pub use buffer::{BufferPool, FrameBuffer, Mask, PooledBuffer};
 pub use error::FrameiruError;
 pub use format::{FrameMetadata, PixelFormat, Resolution};
-pub use mode::BackgroundMode;
+pub use mode::{BackgroundMode, OverlayMode};
 pub use time::timestamp_us_now;
 pub use traits::{Compositor, FrameSink, FrameSource, Segmenter};

@@ -3,7 +3,7 @@
 use crate::buffer::{FrameBuffer, Mask};
 use crate::error::FrameiruError;
 use crate::format::{PixelFormat, Resolution};
-use crate::mode::BackgroundMode;
+use crate::mode::{BackgroundMode, OverlayMode};
 
 /// Produces video frames (V4L2 camera, mock test pattern, etc.).
 pub trait FrameSource: Send + 'static {
@@ -44,6 +44,10 @@ pub trait Compositor: Send + 'static {
 
     /// Applies a new background mode at runtime.
     fn update_background(&mut self, mode: BackgroundMode) -> Result<(), FrameiruError>;
+
+    /// Applies a full-frame overlay on top of the composite. Default no-op
+    /// for custom compositors.
+    fn update_overlay(&mut self, _overlay: OverlayMode) {}
 
     /// Subject fill light `0..=1`: the composite is lifted toward white by
     /// `light * mask * (1 - out)` — brightens only the foreground ("lit").

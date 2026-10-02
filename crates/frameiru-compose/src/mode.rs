@@ -4,8 +4,12 @@
 //! surface; [`Background`] is the loaded, render-ready version: images are
 //! decoded once at update time instead of per frame.
 
+use std::sync::Arc;
+
 use frameiru_core::error::FrameiruError;
 use frameiru_core::{BackgroundMode, Resolution};
+
+use crate::video::VideoSource;
 
 /// Render-ready background for one composite session.
 #[derive(Debug, Clone)]
@@ -22,6 +26,8 @@ pub enum Background {
         data: Vec<u8>,
         resolution: Resolution,
     },
+    /// Looping decoded video: the compositor samples the newest frame.
+    Video { source: Arc<VideoSource> },
 }
 
 impl Background {
@@ -61,6 +67,9 @@ impl Background {
                     },
                 })
             }
+            BackgroundMode::Video { path } => Ok(Self::Video {
+                source: Arc::new(VideoSource::open(path)?),
+            }),
         }
     }
 }
@@ -96,6 +105,16 @@ mod tests {
     fn missing_image_fails_at_resolve() {
         let err = Background::resolve(BackgroundMode::Image {
             path: "/nonexistent/bg.png".into(),
+        });
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn missing_video_fails_at_resolve() {
+        // Missing file (or missing ffprobe) must fail at resolve time, not
+        // mid-stream.
+        let err = Background::resolve(BackgroundMode::Video {
+            path: "/nonexistent/bg.mp4".into(),
         });
         assert!(err.is_err());
     }

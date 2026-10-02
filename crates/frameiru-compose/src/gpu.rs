@@ -17,7 +17,7 @@ use frameiru_core::buffer::Mask;
 use frameiru_core::error::FrameiruError;
 use frameiru_core::format::PixelFormat;
 use frameiru_core::traits::Compositor;
-use frameiru_core::{BackgroundMode, FrameBuffer, Resolution};
+use frameiru_core::{BackgroundMode, FrameBuffer, OverlayMode, Resolution};
 
 use crate::mode::Background;
 use crate::shaders::{BLUR_WGSL, COMPOSITE_WGSL};
@@ -34,6 +34,8 @@ pub struct GpuCompositor {
     blur_v: wgpu::RenderPipeline,
     blur_uniform: wgpu::Buffer,
     background: Background,
+    /// Full-frame overlay applied after the composite shader pass.
+    overlay: OverlayMode,
     /// Subject fill light in [0, 1]; 0 disables (see
     /// [`Compositor::set_subject_light`]).
     subject_light: f32,
@@ -100,6 +102,7 @@ impl GpuCompositor {
             blur_v,
             blur_uniform,
             background: Background::Passthrough,
+            overlay: OverlayMode::None,
             subject_light: 0.0,
             frame_res: res,
             fg_tex,
@@ -132,7 +135,7 @@ impl GpuCompositor {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(16),
+                        min_binding_size: wgpu::BufferSize::new(32),
                     },
                     count: None,
                 },
@@ -409,6 +412,10 @@ impl Compositor for GpuCompositor {
         Ok(())
     }
 
+    fn update_overlay(&mut self, overlay: OverlayMode) {
+        self.overlay = overlay;
+    }
+
     fn set_subject_light(&mut self, light: f32) {
         self.subject_light = light.clamp(0.0, 1.0);
     }
@@ -613,6 +620,22 @@ impl Compositor for GpuCompositor {
                 }
                 Self::upload_rgba(&self.queue, &self.bg_tex, *resolution, 4, &self.image_rgba);
             }
+            Background::Video { source } => {
+                // Same as image: texture sized to the video, re-uploaded with
+                // the newest decoded frame on every composite.
+                let frame = source.current();
+                let res = frame.resolution;
+                if self.bg_tex.size().width != res.width || self.bg_tex.size().height != res.height
+                {
+                    self.bg_tex = Self::create_texture(&self.device, res, TEXTURE_FORMAT, "bg");
+                }
+                self.image_rgba.clear();
+                for px in frame.data.chunks_exact(3) {
+                    self.image_rgba
+                        .extend_from_slice(&[px[0], px[1], px[2], 255]);
+                }
+                Self::upload_rgba(&self.queue, &self.bg_tex, res, 4, &self.image_rgba);
+            }
             Background::Passthrough => unreachable!("handled above"),
         }
 
@@ -625,19 +648,32 @@ impl Compositor for GpuCompositor {
         let bgl = self.composite.get_bind_group_layout(0);
         let globals = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("globals"),
-            size: 16,
+            size: 32,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let wrap = if matches!(self.background, Background::Image { .. }) {
+        let wrap = if matches!(
+            self.background,
+            Background::Image { .. } | Background::Video { .. }
+        ) {
             0.5f32
         } else {
             0.0f32
         };
+        let t = source.metadata.timestamp_us as f32 / 1_000_000.0;
         self.queue.write_buffer(
             &globals,
             0,
-            bytemuck::cast_slice(&[wrap, self.subject_light, 0.0, 0.0]),
+            bytemuck::cast_slice(&[
+                wrap,
+                self.subject_light,
+                self.overlay as u32 as f32,
+                t,
+                res.width as f32,
+                res.height as f32,
+                0.0,
+                0.0,
+            ]),
         );
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("composite bg"),
@@ -815,5 +851,22 @@ mod tests {
         }
         // Subject side stays the source.
         assert_eq!(&out.data[..3], &[255, 255, 255]);
+
+        // Scanlines overlay: odd rows darkened on top of a solid background.
+        // (GPU textures are sRGB, so only relative comparisons are safe.)
+        gpu.update_overlay(OverlayMode::Scanlines);
+        gpu.update_background(BackgroundMode::Color { r: 0, g: 0, b: 0 })
+            .unwrap();
+        let src4 = frame(res(8, 4), 200);
+        let m4 = mask(res(8, 4), 1.0);
+        gpu.composite(&src4, &m4, &mut out).unwrap();
+        assert_eq!(out.data[0], 200, "even row must be untouched");
+        assert!(
+            out.data[8 * 3] < out.data[0],
+            "odd row must be darker, got {} vs {}",
+            out.data[8 * 3],
+            out.data[0]
+        );
+        gpu.update_overlay(OverlayMode::None);
     }
 }

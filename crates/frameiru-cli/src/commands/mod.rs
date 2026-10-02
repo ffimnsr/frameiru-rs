@@ -281,7 +281,15 @@ pub fn parse_background(s: &str) -> anyhow::Result<BackgroundMode> {
             path: PathBuf::from(path.trim()),
         });
     }
-    bail!("unknown background {s:?}; use passthrough | blur:<r> | color:<r,g,b> | image:<path>")
+    if let Some(path) = s.strip_prefix("video:") {
+        if path.trim().is_empty() {
+            bail!("video path must not be empty");
+        }
+        return Ok(BackgroundMode::Video {
+            path: PathBuf::from(path.trim()),
+        });
+    }
+    bail!("unknown background {s:?}; use passthrough | blur:<r> | color:<r,g,b> | image:<path> | video:<path>")
 }
 
 #[cfg(test)]
@@ -358,6 +366,13 @@ mod tests {
                 path: "/tmp/bg.png".into()
             }
         );
+        assert_eq!(
+            parse_background("video:/tmp/bg.mp4").unwrap(),
+            BackgroundMode::Video {
+                path: "/tmp/bg.mp4".into()
+            }
+        );
+        assert!(parse_background("video:").is_err());
         for bad in ["blur:0", "blur:31", "color:1,2", "color:1,2,x", "nope", ""] {
             assert!(parse_background(bad).is_err(), "{bad:?} must fail");
         }

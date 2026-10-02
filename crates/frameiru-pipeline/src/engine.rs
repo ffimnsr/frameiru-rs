@@ -9,7 +9,7 @@ use crossbeam_channel::bounded;
 use frameiru_core::buffer::Mask;
 use frameiru_core::error::FrameiruError;
 use frameiru_core::traits::{Compositor, FrameSink, FrameSource, Segmenter};
-use frameiru_core::{BackgroundMode, FrameBuffer, Resolution};
+use frameiru_core::{BackgroundMode, FrameBuffer, OverlayMode, Resolution};
 use tokio::sync::broadcast;
 
 use crate::config::PipelineConfig;
@@ -44,6 +44,7 @@ impl Engine {
         let (capture_tx, capture_rx) = bounded::<FrameBuffer>(config.channel_capacity);
         let (infer_tx, infer_rx) = bounded::<FrameBuffer>(config.channel_capacity.max(4));
         let (mode_tx, mode_rx) = bounded::<BackgroundMode>(1);
+        let (overlay_tx, overlay_rx) = bounded::<OverlayMode>(1);
         let (preview_tx, _) = broadcast::channel::<Arc<FrameBuffer>>(config.preview_capacity);
         let stop = Arc::new(AtomicBool::new(false));
 
@@ -53,10 +54,13 @@ impl Engine {
             stop: Arc::clone(&stop),
             mask_slot: ArcSwap::from_pointee(Mask::default()),
             background: ArcSwap::from_pointee(BackgroundMode::Passthrough),
+            overlay: ArcSwap::from_pointee(OverlayMode::None),
             last_resolution: ArcSwap::from_pointee(Resolution::default()),
             preview_tx,
             mode_tx,
             mode_rx,
+            overlay_tx,
+            overlay_rx,
             capture_tx,
             capture_rx,
             infer_tx,
@@ -138,6 +142,15 @@ impl PipelineHandle {
         self.inner
             .shared
             .mode_tx
+            .send(mode)
+            .map_err(|_| FrameiruError::Internal("pipeline is shutting down".into()))
+    }
+
+    /// Dynamically changes the full-frame overlay of the running pipeline.
+    pub fn update_overlay(&self, mode: OverlayMode) -> Result<(), FrameiruError> {
+        self.inner
+            .shared
+            .overlay_tx
             .send(mode)
             .map_err(|_| FrameiruError::Internal("pipeline is shutting down".into()))
     }

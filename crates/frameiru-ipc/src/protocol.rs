@@ -76,6 +76,11 @@ mod tests {
                     path: "/tmp/bg.png".into(),
                 },
             },
+            IpcRequest::SetBackground {
+                mode: BackgroundMode::Video {
+                    path: "/tmp/bg.mp4".into(),
+                },
+            },
             IpcRequest::GetStatus,
             IpcRequest::Stop,
         ];

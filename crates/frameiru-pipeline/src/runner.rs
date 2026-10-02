@@ -9,7 +9,7 @@ use arc_swap::ArcSwap;
 use crossbeam_channel::{Receiver, TrySendError};
 use frameiru_core::buffer::Mask;
 use frameiru_core::traits::{Compositor, FrameSink, FrameSource, Segmenter};
-use frameiru_core::{BackgroundMode, FrameBuffer, Resolution};
+use frameiru_core::{BackgroundMode, FrameBuffer, OverlayMode, Resolution};
 use tokio::sync::broadcast;
 
 use crate::config::PipelineConfig;
@@ -27,8 +27,13 @@ pub(crate) struct PipelineShared {
     /// Background-mode update channel consumed by the composer.
     pub mode_tx: crossbeam_channel::Sender<BackgroundMode>,
     pub mode_rx: crossbeam_channel::Receiver<BackgroundMode>,
+    /// Overlay update channel consumed by the composer.
+    pub overlay_tx: crossbeam_channel::Sender<OverlayMode>,
+    pub overlay_rx: crossbeam_channel::Receiver<OverlayMode>,
     /// Last applied background (for status queries).
     pub background: ArcSwap<BackgroundMode>,
+    /// Last applied overlay (for status queries).
+    pub overlay: ArcSwap<OverlayMode>,
     /// Resolution of the last composited frame (for status queries).
     pub last_resolution: ArcSwap<Resolution>,
     /// Capture -> compose channel. Saturation drops the newest frame.
@@ -195,6 +200,12 @@ pub(crate) fn spawn_compose(
                     }
                 }
 
+                // Apply any pending overlay changes before this frame.
+                while let Ok(overlay) = shared.overlay_rx.try_recv() {
+                    compositor.update_overlay(overlay);
+                    shared.overlay.store(Arc::new(overlay));
+                }
+
                 let out = output.get_or_insert_with(|| FrameBuffer::new(frame.metadata));
                 // Without a segmenter (or before its first mask) the slot is
                 // empty-invalid or sized for an old resolution: substitute
@@ -211,12 +222,18 @@ pub(crate) fn spawn_compose(
                 };
 
                 // Scene signature for idle detection (cheap; failing to
-                // produce one just disables the skip).
+                // produce one just disables the skip). Video backgrounds are
+                // intentionally excluded: their frame changes every tick, so
+                // the previous composite can never be reused.
                 let sig = crate::motion::luma_signature(&frame).ok();
                 let bg = shared.background.load();
+                let overlay = shared.overlay.load();
                 let idle = !bg_dirty
                     && has_sig
                     && last_mask.is_some()
+                    // Overlays animate on a clock, so the previous composite
+                    // can never be reused while one is active.
+                    && **overlay == OverlayMode::None
                     && matches!(
                         &**bg,
                         BackgroundMode::Blur { .. } | BackgroundMode::Image { .. }

@@ -10,7 +10,7 @@ use frameiru_core::buffer::Mask;
 use frameiru_core::error::FrameiruError;
 use frameiru_core::format::PixelFormat;
 use frameiru_core::traits::Compositor;
-use frameiru_core::{BackgroundMode, FrameBuffer, Resolution};
+use frameiru_core::{BackgroundMode, FrameBuffer, OverlayMode, Resolution};
 use rayon::prelude::*;
 
 use crate::mode::Background;
@@ -18,6 +18,8 @@ use crate::mode::Background;
 /// CPU fallback compositor.
 pub struct CpuCompositor {
     background: Background,
+    /// Full-frame overlay applied after the background blend.
+    overlay: OverlayMode,
     /// Subject fill light in [0, 1]; 0 disables (see
     /// [`Compositor::set_subject_light`]).
     subject_light: f32,
@@ -29,6 +31,7 @@ impl CpuCompositor {
     pub fn new() -> Self {
         Self {
             background: Background::Passthrough,
+            overlay: OverlayMode::None,
             subject_light: 0.0,
             scratch: Vec::new(),
         }
@@ -49,6 +52,10 @@ impl Compositor for CpuCompositor {
     fn update_background(&mut self, mode: BackgroundMode) -> Result<(), FrameiruError> {
         self.background = Background::resolve(mode)?;
         Ok(())
+    }
+
+    fn update_overlay(&mut self, overlay: OverlayMode) {
+        self.overlay = overlay;
     }
 
     fn set_subject_light(&mut self, light: f32) {
@@ -88,7 +95,6 @@ impl Compositor for CpuCompositor {
         match &self.background {
             Background::Passthrough => {
                 output.data.copy_from_slice(&source.data[..area * 3]);
-                return Ok(());
             }
             Background::Blur { radius } => {
                 if self.scratch.len() < area * 3 {
@@ -136,8 +142,94 @@ impl Compositor for CpuCompositor {
                     &mut output.data,
                 );
             }
+            Background::Video { source: video } => {
+                let frame = video.current();
+                blend_image(
+                    &source.data,
+                    mask,
+                    w,
+                    h,
+                    self.subject_light,
+                    &frame.data,
+                    frame.resolution,
+                    &mut output.data,
+                );
+            }
         }
+
+        apply_overlay(
+            &mut output.data,
+            w,
+            h,
+            self.overlay,
+            source.metadata.timestamp_us,
+        );
         Ok(())
+    }
+}
+
+/// Applies the full-frame overlay pass on top of the finished composite.
+/// All effects are per-pixel multipliers/additions; the animation phase is
+/// driven by the source frame's timestamp so it runs even when the scene is
+/// static.
+fn apply_overlay(out: &mut [u8], w: usize, h: usize, mode: OverlayMode, timestamp_us: u64) {
+    let t = timestamp_us as f64 / 1_000_000.0;
+    match mode {
+        OverlayMode::None => {}
+        OverlayMode::Scanlines => {
+            out.par_chunks_mut(w * 3).enumerate().for_each(|(y, row)| {
+                if y % 2 == 1 {
+                    for c in row {
+                        *c = ((*c as f32) * 0.88) as u8;
+                    }
+                }
+            });
+        }
+        OverlayMode::LightLeak => {
+            let wf = w as f64;
+            let hf = h as f64;
+            // Warm blob drifting on a slow Lissajous path.
+            let cx = (0.5 + 0.35 * (t * 0.7).sin()) * wf;
+            let cy = (0.25 + 0.2 * (t * 0.9 + 1.3).sin()) * hf;
+            let r2 = (wf.max(hf) * 0.65).powi(2);
+            out.par_chunks_mut(w * 3).enumerate().for_each(|(y, row)| {
+                let dy = y as f64 - cy;
+                let dy2 = dy * dy;
+                for x in 0..w {
+                    let dx = x as f64 - cx;
+                    let d2 = dx * dx + dy2;
+                    if d2 >= r2 {
+                        continue;
+                    }
+                    let blob = 1.0 - d2 / r2;
+                    let k = (blob * blob * 0.35) as f32;
+                    let i = x * 3;
+                    row[i] = (row[i] as f32 + 255.0 * k).min(255.0) as u8;
+                    row[i + 1] = (row[i + 1] as f32 + 178.0 * k).min(255.0) as u8;
+                    row[i + 2] = (row[i + 2] as f32 + 89.0 * k).min(255.0) as u8;
+                }
+            });
+        }
+        OverlayMode::Crt => {
+            let wf = w as f64;
+            let hf = h as f64;
+            let flicker = 1.0 + 0.04 * (t * 12.0).sin();
+            out.par_chunks_mut(w * 3).enumerate().for_each(|(y, row)| {
+                let scan = if y % 2 == 1 { 0.8 } else { 1.0 };
+                let ry = (y as f64 + 0.5) / hf - 0.5;
+                let ry2 = ry * ry;
+                for x in 0..w {
+                    let rx = (x as f64 + 0.5) / wf - 0.5;
+                    let vignette = (1.0 - 0.9 * (rx * rx + ry2)).max(0.0);
+                    let k = (scan * vignette * flicker) as f32;
+                    let i = x * 3;
+                    for c in 0..3 {
+                        let v = row[i + c] as f32 * k;
+                        row[i + c] = v.min(255.0) as u8;
+                    }
+                }
+            });
+        }
     }
 }
 
@@ -686,6 +778,112 @@ mod tests {
             format: PixelFormat::Rgb8,
         });
         assert!(c.composite(&src, &m, &mut out).is_err());
+    }
+
+    #[test]
+    fn overlay_none_is_identity() {
+        let mut c = CpuCompositor::new();
+        c.update_background(BackgroundMode::Passthrough).unwrap();
+        c.update_overlay(OverlayMode::None);
+        let src = frame(res(4, 4), 210);
+        let m = mask(res(4, 4), 0.0);
+        let mut out = FrameBuffer::new(FrameMetadata {
+            sequence: 0,
+            timestamp_us: 0,
+            resolution: res(4, 4),
+            format: PixelFormat::Rgb8,
+        });
+        c.composite(&src, &m, &mut out).unwrap();
+        assert_eq!(out.data, src.data);
+    }
+
+    #[test]
+    fn scanlines_darken_odd_rows_only() {
+        let mut c = CpuCompositor::new();
+        c.update_background(BackgroundMode::Color { r: 0, g: 0, b: 0 })
+            .unwrap();
+        c.update_overlay(OverlayMode::Scanlines);
+        let src = frame(res(4, 4), 200);
+        let m = mask(res(4, 4), 1.0); // fully foreground: blend keeps 200
+        let mut out = FrameBuffer::new(FrameMetadata {
+            sequence: 0,
+            timestamp_us: 0,
+            resolution: res(4, 4),
+            format: PixelFormat::Rgb8,
+        });
+        c.composite(&src, &m, &mut out).unwrap();
+        for y in 0..4 {
+            let expected = if y % 2 == 1 {
+                (200.0f32 * 0.88).round() as u8
+            } else {
+                200
+            };
+            assert_eq!(
+                &out.data[y * 4 * 3..y * 4 * 3 + 3],
+                &[expected; 3],
+                "row {y}"
+            );
+        }
+    }
+
+    #[test]
+    fn light_leak_lifts_warm_patch_only() {
+        let mut c = CpuCompositor::new();
+        c.update_background(BackgroundMode::Color { r: 0, g: 0, b: 0 })
+            .unwrap();
+        c.update_overlay(OverlayMode::LightLeak);
+        let mut src = frame(res(64, 48), 0);
+        // t = 5.0s puts the blob near (24, 8); the bottom-right corner must
+        // stay outside its radius.
+        src.metadata.timestamp_us = 5_000_000;
+        let m = mask(res(64, 48), 0.0);
+        let mut out = FrameBuffer::new(FrameMetadata {
+            sequence: 0,
+            timestamp_us: 5_000_000,
+            resolution: res(64, 48),
+            format: PixelFormat::Rgb8,
+        });
+        c.composite(&src, &m, &mut out).unwrap();
+        // Blob center: warm tint added (255, 178, 89) * 0.35.
+        let center = out.data[(8 * 64 + 24) * 3];
+        assert!(
+            (85..=93).contains(&center),
+            "red at blob center was {center}, want ~89"
+        );
+        // Corner outside the radius stays pure black.
+        assert_eq!(
+            &out.data[(47 * 64 + 63) * 3..(47 * 64 + 63) * 3 + 3],
+            &[0, 0, 0]
+        );
+    }
+
+    #[test]
+    fn crt_vignettes_and_darkens_odd_rows() {
+        let mut c = CpuCompositor::new();
+        c.update_background(BackgroundMode::Color { r: 0, g: 0, b: 0 })
+            .unwrap();
+        c.update_overlay(OverlayMode::Crt);
+        let src = frame(res(32, 32), 255);
+        let m = mask(res(32, 32), 1.0);
+        let mut out = FrameBuffer::new(FrameMetadata {
+            sequence: 0,
+            timestamp_us: 0, // t = 0 -> flicker factor exactly 1.0
+            resolution: res(32, 32),
+            format: PixelFormat::Rgb8,
+        });
+        c.composite(&src, &m, &mut out).unwrap();
+
+        let center = out.data[(16 * 32 + 16) * 3];
+        assert!(
+            center > 250,
+            "center pixel must be ~untouched at t=0, got {center}"
+        );
+        let corner = out.data[0];
+        assert!(corner < 200, "corner must be vignetted, got {corner}");
+        // Odd rows get the extra scanline darkening on top of the vignette.
+        let even = out.data[(16 * 32 + 16) * 3];
+        let odd = out.data[(17 * 32 + 16) * 3];
+        assert!(odd < even, "odd row darker than even row at same column");
     }
 
     /// Writes a solid-color PNG to a temp file and returns its path.
