@@ -251,11 +251,12 @@ fn blur_rgb8_masked(
     out: &mut [u8],
 ) {
     let r = radius as i64;
-    let wgt = |alpha: f32| if alpha >= 0.5 { 0.0 } else { 1.0 - alpha };
+    // Exclude foreground from background blur: any pixel with alpha >= 0.2 is excluded
+    // to strictly prevent subject / skin colors from bleeding into the background blur.
+    let wgt = |alpha: f32| if alpha >= 0.20 { 0.0 } else { 1.0 - (alpha / 0.20) };
 
-    // Horizontal pass: sliding weighted window over each row.
-    scratch
-        .par_chunks_mut(w * 3)
+    // Horizontal pass: sliding weighted window over each row, writing into `out`.
+    out.par_chunks_mut(w * 3)
         .enumerate()
         .for_each(|(y, row_out)| {
             let row_in = &src[y * w * 3..(y + 1) * w * 3];
@@ -292,11 +293,12 @@ fn blur_rgb8_masked(
             }
         });
 
-    // Vertical pass: each output row scans the scratch rows in its window,
-    // weighted by the original mask at each sample.
-    out.par_chunks_mut(w * 3)
+    // Vertical pass: scan horizontally blurred rows from `out`, writing the full 2D
+    // blurred background into `scratch` so `blend(&self.scratch, ...)` receives it.
+    scratch
+        .par_chunks_mut(w * 3)
         .enumerate()
-        .for_each(|(y, row_out)| {
+        .for_each(|(y, row_scratch)| {
             let lo = (y as i64 - r).max(0);
             let hi = (y as i64 + r).min(h as i64 - 1);
             for x in 0..w {
@@ -307,16 +309,16 @@ fn blur_rgb8_masked(
                     wsum += wi;
                     let base = ((ry as usize) * w + x) * 3;
                     for c in 0..3 {
-                        sum[c] += wi * scratch[base + c] as f32;
+                        sum[c] += wi * out[base + c] as f32;
                     }
                 }
                 if wsum > 0.0 {
                     for c in 0..3 {
-                        row_out[x * 3 + c] = (sum[c] / wsum).round() as u8;
+                        row_scratch[x * 3 + c] = (sum[c] / wsum).round() as u8;
                     }
                 } else {
-                    row_out[x * 3..x * 3 + 3]
-                        .copy_from_slice(&scratch[(y * w + x) * 3..(y * w + x) * 3 + 3]);
+                    row_scratch[x * 3..x * 3 + 3]
+                        .copy_from_slice(&out[(y * w + x) * 3..(y * w + x) * 3 + 3]);
                 }
             }
         });
@@ -490,12 +492,38 @@ mod tests {
     }
 
     #[test]
+    fn blur_smooths_vertical_step_edge() {
+        // Top half white, bottom half black: vertical blur must smooth the horizontal boundary.
+        let w = 8;
+        let h = 16;
+        let mut px = vec![0u8; w * h * 3];
+        for row in px[..w * (h / 2) * 3].iter_mut() {
+            *row = 255;
+        }
+        let src = frame_of(res(w as u32, h as u32), &px);
+        let mut c = CpuCompositor::new();
+        c.update_background(BackgroundMode::Blur { radius: 3.0 }).unwrap();
+        let m = mask(res(w as u32, h as u32), 0.0);
+        let mut out = FrameBuffer::new(FrameMetadata {
+            sequence: 0,
+            timestamp_us: 0,
+            resolution: res(w as u32, h as u32),
+            format: PixelFormat::Rgb8,
+        });
+        c.composite(&src, &m, &mut out).unwrap();
+        let mid = out.data[w * (h / 2) * 3];
+        assert!((mid as i32 - 128).abs() <= 40, "mid = {mid}");
+    }
+
+    #[test]
     fn blur_smooths_step_edge() {
         // Left half white, right half black: after blur the border is a ramp.
         let w = 32;
         let mut px = vec![255u8; w * 4 * 3];
-        for v in px[w / 2 * 3..].iter_mut() {
-            *v = 0;
+        for row in px.chunks_exact_mut(w * 3) {
+            for v in row[w / 2 * 3..].iter_mut() {
+                *v = 0;
+            }
         }
         let src = frame_of(res(w as u32, 4), &px);
         let mut c = CpuCompositor::new();

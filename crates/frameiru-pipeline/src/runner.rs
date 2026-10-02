@@ -179,14 +179,11 @@ pub(crate) fn spawn_compose(
             let mut last_bg: Option<BackgroundMode> = None;
             let mut bg_dirty = true;
             while !shared.stop.load(Ordering::Relaxed) {
-                let mut frame = match input_rx.recv_timeout(STOP_POLL) {
+                let frame = match input_rx.recv_timeout(STOP_POLL) {
                     Ok(frame) => frame,
                     Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
                     Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
                 };
-                while let Ok(newer) = input_rx.try_recv() {
-                    frame = newer;
-                }
 
                 // Apply any pending background changes before this frame.
                 while let Ok(mode) = shared.mode_rx.try_recv() {
