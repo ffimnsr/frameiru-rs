@@ -173,15 +173,14 @@ impl Compositor for CpuCompositor {
 /// driven by the source frame's timestamp so it runs even when the scene is
 /// static.
 fn apply_overlay(out: &mut [u8], w: usize, h: usize, mode: OverlayMode, timestamp_us: u64) {
-    let t = timestamp_us as f64 / 1_000_000.0;
+    let t = (timestamp_us % (3600 * 1_000_000)) as f64 / 1_000_000.0;
     match mode {
         OverlayMode::None => {}
         OverlayMode::Scanlines => {
             out.par_chunks_mut(w * 3).enumerate().for_each(|(y, row)| {
-                if y % 2 == 1 {
-                    for c in row {
-                        *c = ((*c as f32) * 0.88) as u8;
-                    }
+                let factor = if y % 4 >= 2 { 0.50 } else { 1.0 };
+                for c in row {
+                    *c = ((*c as f32) * factor) as u8;
                 }
             });
         }
@@ -213,20 +212,30 @@ fn apply_overlay(out: &mut [u8], w: usize, h: usize, mode: OverlayMode, timestam
         OverlayMode::Crt => {
             let wf = w as f64;
             let hf = h as f64;
-            let flicker = 1.0 + 0.04 * (t * 12.0).sin();
+            let flicker = 1.0 + 0.05 * (t * 15.0).sin();
+            let roll_phase = t * 5.0;
             out.par_chunks_mut(w * 3).enumerate().for_each(|(y, row)| {
-                let scan = if y % 2 == 1 { 0.8 } else { 1.0 };
-                let ry = (y as f64 + 0.5) / hf - 0.5;
+                let scan = if y % 4 >= 2 { 0.45 } else { 1.0 };
+                let y_norm = (y as f64 + 0.5) / hf;
+                let roll = 1.0 + 0.10 * (y_norm * std::f64::consts::PI * 4.0 - roll_phase).sin();
+                let ry = y_norm - 0.5;
                 let ry2 = ry * ry;
                 for x in 0..w {
                     let rx = (x as f64 + 0.5) / wf - 0.5;
-                    let vignette = (1.0 - 0.9 * (rx * rx + ry2)).max(0.0);
-                    let k = (scan * vignette * flicker) as f32;
+                    let vignette = (1.0 - 1.5 * (rx * rx + ry2)).clamp(0.0, 1.0);
+                    let k = (scan * roll * vignette * flicker) as f32;
+                    let sub = x % 3;
+                    let rgb_triad = if sub == 0 {
+                        (1.15f32, 0.88f32, 0.88f32)
+                    } else if sub == 1 {
+                        (0.88f32, 1.15f32, 0.88f32)
+                    } else {
+                        (0.88f32, 0.88f32, 1.15f32)
+                    };
                     let i = x * 3;
-                    for c in 0..3 {
-                        let v = row[i + c] as f32 * k;
-                        row[i + c] = v.min(255.0) as u8;
-                    }
+                    row[i] = (row[i] as f32 * k * rgb_triad.0).min(255.0) as u8;
+                    row[i + 1] = (row[i + 1] as f32 * k * rgb_triad.1).min(255.0) as u8;
+                    row[i + 2] = (row[i + 2] as f32 * k * rgb_triad.2).min(255.0) as u8;
                 }
             });
         }
@@ -813,8 +822,8 @@ mod tests {
         });
         c.composite(&src, &m, &mut out).unwrap();
         for y in 0..4 {
-            let expected = if y % 2 == 1 {
-                (200.0f32 * 0.88).round() as u8
+            let expected = if y % 4 >= 2 {
+                (200.0f32 * 0.50).round() as u8
             } else {
                 200
             };
@@ -875,15 +884,15 @@ mod tests {
 
         let center = out.data[(16 * 32 + 16) * 3];
         assert!(
-            center > 250,
+            center > 220,
             "center pixel must be ~untouched at t=0, got {center}"
         );
         let corner = out.data[0];
         assert!(corner < 200, "corner must be vignetted, got {corner}");
         // Odd rows get the extra scanline darkening on top of the vignette.
-        let even = out.data[(16 * 32 + 16) * 3];
-        let odd = out.data[(17 * 32 + 16) * 3];
-        assert!(odd < even, "odd row darker than even row at same column");
+        let bright_row = out.data[(16 * 32 + 16) * 3];
+        let scan_row = out.data[(18 * 32 + 16) * 3];
+        assert!(scan_row < bright_row, "scanline row darker than bright row at same column");
     }
 
     /// Writes a solid-color PNG to a temp file and returns its path.

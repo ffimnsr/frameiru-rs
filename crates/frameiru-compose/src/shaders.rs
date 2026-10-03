@@ -11,6 +11,8 @@ struct Globals {
     // g.z:  overlay mode (0 off, 1 scanlines, 2 light leak, 3 CRT)
     // g.w:  time in seconds (overlay animation phase)
     // g2.xy: frame size in pixels (overlay coordinates)
+    // g2.z:  passthrough mode (1.0 = passthrough, 0.0 = composite)
+    // g2.w:  unused
     g: vec4<f32>,
     g2: vec4<f32>,
 }
@@ -48,23 +50,31 @@ fn vs(@builtin(vertex_index) vi: u32) -> VsOut {
 @fragment
 fn fs(in: VsOut) -> @location(0) vec4<f32> {
     let fg = textureSample(fg_tex, fg_samp, in.uv);
-    let bg = textureSample(bg_tex, bg_samp, in.uv);
-    let m = textureSample(mask_tex, fg_samp, in.uv).r;
-    // Light wrap (U9.5): spill the background color over the subject edge
-    // for image backgrounds, so the fringe takes the room's ambient colors.
-    let fgw = mix(fg, bg, globals.g.x * (1.0 - m));
-    let blended = mix(bg, fgw, m);
-    // Subject fill light: lift the (masked) subject toward white.
-    let lit = blended + globals.g.y * m * (vec4<f32>(1.0, 1.0, 1.0, 1.0) - blended);
+    var out_c: vec3<f32>;
+    if (globals.g2.z > 0.5) {
+        out_c = fg.rgb;
+    } else {
+        let bg = textureSample(bg_tex, bg_samp, in.uv);
+        let m = textureSample(mask_tex, fg_samp, in.uv).r;
+        // Light wrap (U9.5): spill the background color over the subject edge
+        // for image backgrounds, so the fringe takes the room's ambient colors.
+        let fgw = mix(fg, bg, globals.g.x * (1.0 - m));
+        let blended = mix(bg, fgw, m);
+        // Subject fill light: lift the (masked) subject toward white.
+        let lit = blended + globals.g.y * m * (vec4<f32>(1.0, 1.0, 1.0, 1.0) - blended);
+        out_c = lit.rgb;
+    }
 
     // Full-frame overlay pass (mirrors the CPU compositor's formulas).
     let ov = globals.g.z;
     let t = globals.g.w;
     let px = vec2<f32>(in.uv.x * globals.g2.x, in.uv.y * globals.g2.y);
-    var out_c = lit.rgb;
     if (ov == 1.0) {
-        if (fract(px.y * 0.5) >= 0.5) {
-            out_c *= 0.88;
+        // Authentic 270-scanline look: 4-pixel period with 2px bright beam, 2px dark trough
+        // 2-pixel width ensures scanlines survive bilinear minification in preview windows.
+        let line = u32(in.pos.y) % 4u;
+        if (line >= 2u) {
+            out_c *= 0.50;
         }
     } else if (ov == 2.0) {
         let cx = (0.5 + 0.35 * sin(t * 0.7)) * globals.g2.x;
@@ -74,17 +84,32 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
         if (d2 < r) {
             let blob = 1.0 - d2 / r;
             let k = blob * blob * 0.35;
-            out_c += vec3<f32>(255.0, 178.0, 89.0) * k;
+            out_c += vec3<f32>(1.0, 178.0 / 255.0, 89.0 / 255.0) * k;
         }
     } else if (ov == 3.0) {
-        if (fract(px.y * 0.5) >= 0.5) {
-            out_c *= 0.8;
+        // CRT: Strong scanlines (4px period), rolling cathode beam, RGB phosphor triad, and curved vignette
+        let line = u32(in.pos.y) % 4u;
+        var scan = 1.0;
+        if (line >= 2u) {
+            scan = 0.45;
         }
+        let roll = 1.0 + 0.10 * sin(in.uv.y * 12.56637 - t * 5.0);
         let rx = in.uv.x - 0.5;
         let ry = in.uv.y - 0.5;
-        let vignette = max(1.0 - 0.9 * (rx * rx + ry * ry), 0.0);
-        out_c *= vignette;
-        out_c *= 1.0 + 0.04 * sin(t * 12.0);
+        let vignette = clamp(1.0 - 1.5 * (rx * rx + ry * ry), 0.0, 1.0);
+        let flicker = 1.0 + 0.05 * sin(t * 15.0);
+
+        let sub = u32(in.pos.x) % 3u;
+        var rgb_triad = vec3<f32>(0.9, 0.9, 0.9);
+        if (sub == 0u) {
+            rgb_triad = vec3<f32>(1.15, 0.88, 0.88);
+        } else if (sub == 1u) {
+            rgb_triad = vec3<f32>(0.88, 1.15, 0.88);
+        } else {
+            rgb_triad = vec3<f32>(0.88, 0.88, 1.15);
+        }
+
+        out_c = clamp(out_c * scan * roll * rgb_triad * vignette * flicker, vec3<f32>(0.0), vec3<f32>(1.0));
     }
     return vec4<f32>(out_c, 1.0);
 }

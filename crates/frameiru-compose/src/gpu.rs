@@ -443,7 +443,8 @@ impl Compositor for GpuCompositor {
         let area = res.area() as usize;
         output.data.resize(area * 3, 0);
 
-        if matches!(self.background, Background::Passthrough) {
+        let is_passthrough = matches!(self.background, Background::Passthrough);
+        if is_passthrough && self.overlay == OverlayMode::None {
             output.data.copy_from_slice(&source.data[..area * 3]);
             return Ok(());
         }
@@ -636,7 +637,10 @@ impl Compositor for GpuCompositor {
                 }
                 Self::upload_rgba(&self.queue, &self.bg_tex, res, 4, &self.image_rgba);
             }
-            Background::Passthrough => unreachable!("handled above"),
+            Background::Passthrough => {
+                // In passthrough mode, bg_tex is not sampled in the shader;
+                // self.bg_tex remains bound as a valid dummy texture.
+            }
         }
 
         // Composite pass.
@@ -660,7 +664,8 @@ impl Compositor for GpuCompositor {
         } else {
             0.0f32
         };
-        let t = source.metadata.timestamp_us as f32 / 1_000_000.0;
+        let t = ((source.metadata.timestamp_us % (3600 * 1_000_000)) as f64 / 1_000_000.0) as f32;
+        let passthrough_flag = if is_passthrough { 1.0f32 } else { 0.0f32 };
         self.queue.write_buffer(
             &globals,
             0,
@@ -671,7 +676,7 @@ impl Compositor for GpuCompositor {
                 t,
                 res.width as f32,
                 res.height as f32,
-                0.0,
+                passthrough_flag,
                 0.0,
             ]),
         );
@@ -860,12 +865,59 @@ mod tests {
         let src4 = frame(res(8, 4), 200);
         let m4 = mask(res(8, 4), 1.0);
         gpu.composite(&src4, &m4, &mut out).unwrap();
-        assert_eq!(out.data[0], 200, "even row must be untouched");
+        assert_eq!(out.data[0], 200, "bright row must be untouched");
         assert!(
-            out.data[8 * 3] < out.data[0],
-            "odd row must be darker, got {} vs {}",
-            out.data[8 * 3],
+            out.data[2 * 8 * 3] < out.data[0],
+            "scanline row must be darker, got {} vs {}",
+            out.data[2 * 8 * 3],
             out.data[0]
+        );
+
+        // Scanlines overlay with Passthrough background: must darken scanline rows!
+        gpu.update_background(BackgroundMode::Passthrough).unwrap();
+        let src_pass = frame(res(8, 4), 200);
+        let m_pass = mask(res(8, 4), 0.0);
+        gpu.composite(&src_pass, &m_pass, &mut out).unwrap();
+        assert_eq!(out.data[0], 200, "bright row untouched in passthrough scanlines");
+        assert!(
+            out.data[2 * 8 * 3] < out.data[0],
+            "scanline row must be darker in passthrough scanlines, got {} vs {}",
+            out.data[2 * 8 * 3],
+            out.data[0]
+        );
+
+        // LightLeak: check that center doesn't blow out to 255 on a dark frame
+        gpu.update_overlay(OverlayMode::LightLeak);
+        let mut src_leak = frame(res(64, 48), 0);
+        src_leak.metadata.timestamp_us = 5_000_000;
+        let m_leak = mask(res(64, 48), 0.0);
+        gpu.composite(&src_leak, &m_leak, &mut out).unwrap();
+        let center_r = out.data[(8 * 64 + 24) * 3];
+        assert!(
+            center_r < 180,
+            "light leak must not blow out to white/255, got {center_r}"
+        );
+        assert!(
+            center_r > 30,
+            "light leak must visibly illuminate the blob center, got {center_r}"
+        );
+
+        // CRT: test in passthrough mode, corner must be darker than center
+        gpu.update_overlay(OverlayMode::Crt);
+        let src_crt = frame(res(32, 32), 255);
+        let m_crt = mask(res(32, 32), 0.0);
+        gpu.composite(&src_crt, &m_crt, &mut out).unwrap();
+        let center_val = out.data[(16 * 32 + 16) * 3];
+        let corner_val = out.data[0];
+        assert!(
+            corner_val < center_val,
+            "CRT corner ({corner_val}) must be darker than center ({center_val})"
+        );
+        let bright_crt = out.data[(16 * 32 + 16) * 3];
+        let scan_crt = out.data[(18 * 32 + 16) * 3];
+        assert!(
+            scan_crt < bright_crt,
+            "CRT scanline row ({scan_crt}) must be darker than bright row ({bright_crt})"
         );
         gpu.update_overlay(OverlayMode::None);
     }
