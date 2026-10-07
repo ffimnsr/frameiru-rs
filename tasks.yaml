@@ -7,3 +7,11 @@ tasks:
     commands:
       - echo "Hello, World!"
     description: Sample greet command
+
+  install-local:
+    description: Build release CLI (full features) and GUI, install both to ~/.local/bin
+    commands:
+      - cargo build --release -p frameiru-cli --features full
+      - cargo build --release -p frameiru-ui
+      - install -Dm755 target/release/frameiru-cli "$HOME/.local/bin/frameiru-cli"
+      - install -Dm755 target/release/frameiru-ui "$HOME/.local/bin/frameiru-ui"
