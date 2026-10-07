@@ -50,9 +50,7 @@ frameiru-cli run --model /path/to/rvm_mobilenetv3_fp32.onnx \
     --input-size 256x256 --background blur:8
 ```
 
-The embedded default is MediaPipe Selfie Segmentation landscape (256x144,
-unit normalization). External models default to imagenet normalization; RVM
-(u2net family) needs `--input-size` matching the graph (256x256 for RVM,
+The embedded default is MediaPipe Selfie Segmentation. External models default to imagenet normalization; RVM (u2net family) needs `--input-size` matching the graph (256x256 for RVM,
 320x320 for silueta/u2net, 1024x1024 for isnet/BiRefNet/rmbg-2.0).
 
 ## 3. Video consumer check
