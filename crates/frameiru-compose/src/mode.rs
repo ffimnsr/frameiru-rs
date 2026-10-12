@@ -1,7 +1,7 @@
 //! Resolved background states shared by the CPU and GPU compositors.
 //!
-//! [`BackgroundMode`](frameiru_core::BackgroundMode) is the dynamic control
-//! surface; [`Background`] is the loaded, render-ready version: images are
+//! [`BackgroundMode`] is the dynamic control surface; [`Background`] is the
+//! loaded, render-ready version: images are
 //! decoded once at update time instead of per frame.
 
 use std::sync::Arc;

@@ -21,7 +21,7 @@ pub struct PipelineConfig {
     pub mask_alpha: Option<f32>,
     /// Cap on segmentation rate; `0` disables throttling (segment every
     /// frame). Static scenes skip inference entirely, motion overrides the
-    /// cap at half the interval (see [`crate::motion::InferGate`]).
+    /// cap at half the interval (see `InferGate` in the motion module).
     pub infer_max_fps: u32,
     /// Luma-diff (8-bit units) above which a frame is treated as "moved".
     pub infer_motion_threshold: f32,

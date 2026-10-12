@@ -143,7 +143,7 @@ async fn worker(mut rx: mpsc::Receiver<Cmd>, minimized: Arc<AtomicBool>, pid: u3
 
 /// Controller-side handle: owns the tokio runtime and the worker task.
 /// Created once; `set_enabled` drives the worker over a channel. The
-/// minimize flag is shared with the poll loop (via [`MiniPreviewController`]).
+/// minimize flag is shared with the poll loop (via [`KWinWatch`]'s channel).
 pub struct KWinWatch {
     rt: Runtime,
     tx: mpsc::Sender<Cmd>,

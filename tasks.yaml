@@ -8,6 +8,23 @@ tasks:
       - echo "Hello, World!"
     description: Sample greet command
 
+  ci:
+    description: Run the same quality gates as the CI workflow (fmt, clippy, tests)
+    commands:
+      - cargo fmt --all --check
+      - cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - cargo test --quiet --workspace --locked
+
+  release-package:
+    description: Build the four release binaries (full features) and pack dist/*.tar.gz like the release workflow
+    commands:
+      - cargo build --locked --release -p frameiru-cli --features full
+      - cargo build --locked --release -p frameiru-ui
+      - cargo build --locked --release -p frameiru-webcam-utils
+      - cargo build --locked --release -p frameiru-loopback-helper
+      - rm -rf dist
+      - "VERSION=\"$(grep -m1 '^version = ' Cargo.toml | cut -d '\"' -f2)\"; ARCH=\"$(uname -m)\"; BASENAME=\"frameiru-${VERSION}-${ARCH}-unknown-linux-gnu\"; mkdir -p \"dist/${BASENAME}/packaging/polkit\"; cp target/release/frameiru-cli target/release/frameiru-ui target/release/frameiru-webcam-utils target/release/frameiru-loopback-helper \"dist/${BASENAME}/\"; cp packaging/polkit/org.frameiru.loopback.policy \"dist/${BASENAME}/packaging/polkit/\"; cp README.md LICENSE \"dist/${BASENAME}/\"; tar -czf \"dist/${BASENAME}.tar.gz\" -C dist \"${BASENAME}\"; sha256sum \"dist/${BASENAME}.tar.gz\" > \"dist/${BASENAME}.tar.gz.sha256\"; echo \"Packed dist/${BASENAME}.tar.gz\""
+
   install-local:
     description: Build every release binary (CLI with full features, GUI, webcam utils, loopback helper) and install them to ~/.local/bin
     commands:

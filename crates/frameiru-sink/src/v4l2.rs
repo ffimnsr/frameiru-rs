@@ -7,7 +7,7 @@
 //!
 //! # Send safety
 //!
-//! Like [`crate::v4l2`'s capture source](frameiru_capture::v4l2), the wrapped
+//! Like the capture source in `frameiru-capture`'s `v4l2` module, the wrapped
 //! [`v4l::io::mmap::Stream`] holds `&mut [u8]` borrows of kernel-mapped
 //! buffers, so the struct cannot derive `Send` automatically. All access
 //! happens through `FrameSink::write_frame(&mut self)`, so a moved sink is

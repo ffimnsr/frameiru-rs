@@ -1,5 +1,7 @@
 # Frameiru
 
+[![CI](https://github.com/ffimnsr/frameiru-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/ffimnsr/frameiru-rs/actions/workflows/ci.yml)
+
 Real-time Linux virtual webcam with background blur and replacement, written in Rust.
 
 Frameiru reads your physical camera, computes a foreground mask with an embedded neural
@@ -20,6 +22,7 @@ Teams, Discord, `ffplay`, or anything else can select as a regular webcam.
 ## Contents
 
 - [How it works](#how-it-works)
+- [Install](#install)
 - [Requirements](#requirements)
 - [Quick start](#quick-start)
 - [Virtual camera setup](#virtual-camera-setup)
@@ -59,6 +62,33 @@ by bounded channels:
 - The compositor can reuse the previous composite for idle frames while still feeding the
   sink, keeping output FPS stable when only the background changes.
 - A preview broadcast channel lets the GUI display frames without touching the hot path.
+
+## Install
+
+Install or update the latest release (Linux only, `x86_64` / `aarch64`):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ffimnsr/frameiru-rs/master/install.sh | sh
+```
+
+This installs `frameiru-cli`, `frameiru-ui`, `frameiru-webcam-utils`, and
+`frameiru-loopback-helper` to `~/.local/bin`, plus docs and licenses to your XDG data
+hierarchy. The script verifies the archive SHA-256 and warns about missing runtime
+dependencies (fontconfig for the GUI, `v4l2loopback` for the virtual camera).
+
+Pass `--with-polkit` to also install the loopback helper and polkit policy to their system
+paths (`/usr/libexec`, `/usr/share/polkit-1/actions`), which gives the GUI's **LOAD
+VIRTUAL CAMERA** button the branded admin prompt:
+
+```sh
+sh install.sh --with-polkit
+```
+
+Rerun the curl command to update to a newer release; pin a tag with `--version`
+(e.g. `--version 0.1.0`). After installing, verify your setup with `frameiru-cli doctor`.
+
+Release artifacts (tarballs, checksums, cosign signatures, SBOMs, SLSA attestations) and
+the full release procedure are documented in [docs/release.md](docs/release.md).
 
 ## Requirements
 
@@ -352,6 +382,9 @@ cargo fmt --check
 cargo clippy --workspace --all-targets --all-features
 ```
 
+CI runs the same gates (fmt, clippy, docs, build, tests on x86_64 and aarch64, installer
+shellcheck) on every push and pull request; see [.github/workflows/ci.yml](.github/workflows/ci.yml).
+
 ## Troubleshooting
 
 - **`/dev/video10` does not exist** — `sudo frameiru-cli doctor` prints the exact cause
@@ -448,6 +481,7 @@ vendor-only controls (FOV preset, HDR, flips, anti-flicker). See
 ## Documentation
 
 - [docs/e2e.md](docs/e2e.md) — hardware end-to-end verification procedure.
+- [docs/release.md](docs/release.md) — release process, artifacts, and verification.
 - [docs/research/Real-Time Background Blur Optimization.md](docs/research/Real-Time%20Background%20Blur%20Optimization.md)
   — design research on matting models and pipeline optimization.
 

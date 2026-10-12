@@ -7,8 +7,8 @@
 //! it to the frame). Passthrough avoids the GPU entirely.
 //!
 //! Frame readback is synchronous (`map_async` + `device.poll` loop) because
-//! the [`Compositor`](frameiru_core::Compositor) trait is sync; this adds one
-//! frame of latency on the readback, acceptable for the fallback role of
+//! the [`Compositor`] trait is sync; this adds one frame of latency on the
+//! readback, acceptable for the fallback role of
 //! this path.
 
 use std::sync::Arc;
