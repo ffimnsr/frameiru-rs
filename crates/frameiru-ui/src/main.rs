@@ -41,6 +41,6 @@ fn main() -> anyhow::Result<()> {
         height: h,
     };
     let window = MainWindow::new()?;
-    let app = App::new(window, cli.model, model_input);
+    let app = App::new(window, cli.model, model_input)?;
     app.run()
 }

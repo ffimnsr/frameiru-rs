@@ -1,0 +1,23 @@
+// System tray icon + menu. Keeps Frameiru alive when the window is closed
+// (close-to-tray): a visible SystemTrayIcon holds the event loop keepalive.
+export component FrameiruTray inherits SystemTrayIcon {
+    icon: @image-url("tray-icon.png");
+    tooltip: "Frameiru";
+    title: "Frameiru";
+
+    clicked => { root.show_window(); }
+
+    Menu {
+        MenuItem {
+            title: "Show Frameiru";
+            activated => { root.show_window(); }
+        }
+        MenuItem {
+            title: "Quit";
+            activated => { root.quit(); }
+        }
+    }
+
+    callback show_window();
+    callback quit();
+}

@@ -18,13 +18,17 @@ use frameiru_core::traits::{FrameSink, FrameSource, Segmenter};
 use frameiru_core::{BackgroundMode, FrameBuffer, OverlayMode};
 use frameiru_pipeline::{Engine, PipelineConfig};
 use frameiru_webcam_utils::controls::ControlInfo;
-use slint::{ComponentHandle, SharedString, VecModel};
+use slint::{CloseRequestResponse, ComponentHandle, SharedString, VecModel};
 
 use crate::devices::{detect_devices, DeviceEntry};
 use crate::virtual_camera::{self, SinkState};
 use crate::webcam;
 
-slint::include_modules!();
+// Generated per-.slint-file modules. `slint::include_modules!()` can't be used: it
+// expands to the single file named by `SLINT_INCLUDE_GENERATED`, which the last
+// `slint_build::compile` call overwrites, so pull both outputs in manually.
+include!(concat!(env!("OUT_DIR"), "/main.rs"));
+include!(concat!(env!("OUT_DIR"), "/tray.rs"));
 
 const PREVIEW_WIDTH: u32 = 640;
 const PREVIEW_HEIGHT: u32 = 480;
@@ -49,6 +53,8 @@ pub struct App {
     sink_action_busy: bool,
     /// Hot-attach watcher while the engine runs on a mock sink (layer 5).
     sink_watcher: Option<virtual_camera::SinkWatcher>,
+    /// System tray icon; holding it keeps the app alive when the window is hidden.
+    tray: FrameiruTray,
 }
 
 impl App {
@@ -56,7 +62,7 @@ impl App {
         window: MainWindow,
         model: Option<std::path::PathBuf>,
         model_input: Resolution,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         let devices = detect_devices();
         // Default to first physical camera if present, otherwise mock
         let default_index = if devices.len() > 1 { 1 } else { 0 };
@@ -102,7 +108,7 @@ impl App {
         let sink_state = SinkState::probe();
         virtual_camera::apply(&window, &virtual_camera::view_for(&sink_state, ""));
 
-        Self {
+        Ok(Self {
             window,
             engine: None,
             devices,
@@ -113,20 +119,51 @@ impl App {
             sink_state,
             sink_action_busy: false,
             sink_watcher: None,
-        }
+            tray: FrameiruTray::new()?,
+        })
     }
 
-    /// Runs the event loop; returns after the window closes.
+    /// Runs the event loop; returns after the window closes or the tray Quit
+    /// action fires.
     pub fn run(self) -> anyhow::Result<()> {
         let app = Rc::new(RefCell::new(self));
         Self::wire_callbacks(app.clone());
+        Self::wire_tray_callbacks(app.clone());
         let window = app.borrow().window.clone_strong();
+        // Close-to-tray: closing the window hides it instead of tearing down
+        // the app; the visible tray icon keeps the event loop alive.
+        window
+            .window()
+            .on_close_requested(|| CloseRequestResponse::HideWindow);
+        // Tray must be visible before the loop runs, or closing the window
+        // releases the last keepalive and the loop exits.
+        app.borrow().tray.show()?;
         window.run()?;
-        // Window closed: shut the pipeline down cleanly.
+        // Loop exited (window closed with no tray, or tray Quit): shut the
+        // pipeline down cleanly.
         if let Some(engine) = app.borrow_mut().engine.take() {
             engine.shutdown();
         }
         Ok(())
+    }
+
+    fn wire_tray_callbacks(app: Rc<RefCell<App>>) {
+        // Tray left-click / "Show Frameiru": bring the window back up.
+        let a = app.clone();
+        app.borrow().tray.on_show_window(move || {
+            if let Some(window) = a.borrow().window.as_weak().upgrade() {
+                let _ = window.show();
+            }
+        });
+
+        // Tray "Quit": shut the pipeline down and exit the event loop.
+        let a = app.clone();
+        app.borrow().tray.on_quit(move || {
+            if let Some(engine) = a.borrow_mut().engine.take() {
+                engine.shutdown();
+            }
+            let _ = slint::quit_event_loop();
+        });
     }
 
     fn wire_callbacks(app: Rc<RefCell<App>>) {
