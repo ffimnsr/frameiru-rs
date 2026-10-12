@@ -583,7 +583,7 @@ impl GpuCompositor {
         self.queue.write_buffer(
             &self.bloom_blur_uniform,
             0,
-            bytemuck::cast_slice(&[8.0, step_h, 0.0, 0.0]),
+            bytemuck::cast_slice(&[12.0, step_h, 0.0, 0.0]),
         );
         {
             let mut encoder = self
@@ -636,7 +636,7 @@ impl GpuCompositor {
         self.queue.write_buffer(
             &self.bloom_blur_uniform,
             0,
-            bytemuck::cast_slice(&[8.0, 0.0, step_v, 0.0]),
+            bytemuck::cast_slice(&[12.0, 0.0, step_v, 0.0]),
         );
         {
             let mut encoder = self

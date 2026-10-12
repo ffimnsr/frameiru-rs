@@ -19,16 +19,32 @@ use rayon::prelude::*;
 
 /// Luma weights shared with the GPU shader branch.
 const LUMA: [f32; 3] = [0.299, 0.587, 0.114];
-/// Shadow tint applied by grade strength `0.55 * (1 - luma)^2` (blue/purple).
-const SHADOW: [f32; 3] = [0.16, 0.10, 0.42];
-/// Highlight tint applied by grade strength `0.35 * luma^2` (magenta).
-const HIGHLIGHT: [f32; 3] = [0.42, 0.10, 0.46];
-/// Luma above which pixels contribute to the bloom halo.
-const BLOOM_THRESHOLD: f32 = 0.62;
-/// Bloom accumulation gain for over-threshold luma.
-const BLOOM_GAIN: f32 = 1.6;
-/// Box blur radius (pixels) at 1/4 res == 32 px of halo spread at full res.
-const BLOOM_RADIUS: usize = 8;
+/// Shadow tint: deep indigo, applied by `0.85 * (1 - luma)^2`.
+const SHADOW: [f32; 3] = [0.08, 0.02, 0.45];
+/// Highlight tint: hot magenta, applied by `0.60 * luma^3`.
+const HIGHLIGHT: [f32; 3] = [0.72, 0.08, 0.58];
+/// Contrast S-curve pivot multiplier applied before the split-tone tints.
+const CONTRAST: f32 = 1.18;
+/// Saturation boost after the contrast curve.
+const SATURATION: f32 = 1.25;
+/// Shadow split-tone strength at zero luma.
+const SHADOW_STRENGTH: f32 = 0.85;
+/// Highlight split-tone strength at full luma.
+const HIGHLIGHT_STRENGTH: f32 = 0.60;
+/// Luma at which the bloom knee starts rolling in (soft threshold on the
+/// raw brightness; the max-channel term keeps neon magenta/cyan below 0.5
+/// luma in the halation while skin tones stay calm).
+const BLOOM_LO: f32 = 0.55;
+/// Luma at which the bloom knee saturates.
+const BLOOM_HI: f32 = 0.95;
+/// Bloom peak gain for fully hot pixels.
+const BLOOM_GAIN: f32 = 1.2;
+/// Max-channel weight in the "hotness" measure (see [`BLOOM_LO`]).
+const HOT_CHROMA: f32 = 0.75;
+/// How far the halo color is pushed toward the magenta highlight tint.
+const HALO_TINT: f32 = 0.45;
+/// Box blur radius (pixels) at 1/4 res == 48 px of halo spread at full res.
+const BLOOM_RADIUS: usize = 12;
 /// Fraction of 24-row bands that rip horizontally per frame (~15%).
 const TEAR_P: f32 = 0.85;
 /// Fraction of ripping bands that also macroblock into 8px blocks.
@@ -51,16 +67,30 @@ pub(crate) fn apply(out: &mut [u8], w: usize, h: usize, t: f64) {
     finalize(&src, &bloom, out, w, h, qw, t);
 }
 
-/// Grade: shadows drift toward blue/purple, highlights toward magenta/cyan.
-/// Mirrored by `grade()` in the WGSL branch.
+/// Grade: contrast curve, saturation boost, then split-tone — shadows to
+/// deep indigo, highlights to hot magenta. Mirrored by `grade()` in the
+/// WGSL shaders; strengths are tuned to read as "neon night" even on
+/// low-contrast webcam light.
 #[inline]
 fn grade(c: [f32; 3]) -> [f32; 3] {
-    let l = dot_luma(c);
-    let s = (1.0 - l) * (1.0 - l) * 0.55;
-    let h = l * l * 0.35;
     let mut o = [0.0f32; 3];
-    for k in 0..3 {
-        o[k] = c[k] + (SHADOW[k] - c[k]) * s + HIGHLIGHT[k] * h;
+    let mut l = dot_luma(c);
+    // Contrast S-curve: crush blacks, lift whites.
+    for (k, v) in c.iter().enumerate() {
+        o[k] = (v - 0.5) * CONTRAST + 0.5;
+    }
+    l = (l - 0.5) * CONTRAST + 0.5;
+    // Saturation boost around the new luma.
+    for v in o.iter_mut() {
+        *v = l + (*v - l) * SATURATION;
+    }
+    l = dot_luma(o);
+    // Split-tone: (1 - l)^2 and l^3 keep the two tints from fighting over
+    // the midtones.
+    let s = (1.0 - l) * (1.0 - l) * SHADOW_STRENGTH;
+    let h = l * l * l * HIGHLIGHT_STRENGTH;
+    for (v, tint) in o.iter_mut().zip(SHADOW.iter().zip(HIGHLIGHT.iter())) {
+        *v = *v + (tint.0 - *v) * s + (tint.1 - *v) * h;
     }
     o
 }
@@ -78,15 +108,23 @@ fn build_bloom(src: &[u8], bloom: &mut [f32], w: usize, h: usize, qw: usize) {
                 let base = y * w * 3;
                 for x in 0..w.min(qw * 4) {
                     let i = base + x * 3;
-                    let c = grade([
+                    let raw = [
                         src[i] as f32 / 255.0,
                         src[i + 1] as f32 / 255.0,
                         src[i + 2] as f32 / 255.0,
-                    ]);
-                    let wgt = (dot_luma(c) - BLOOM_THRESHOLD).max(0.0) * BLOOM_GAIN;
+                    ];
+                    // Hotness on the RAW pixel: pure magenta/cyan neon sits at
+                    // ~0.4 luma, so the max-channel term keeps colored light
+                    // in the halation while bright-but-flat skin stays out.
+                    let hot =
+                        dot_luma(raw).max(raw.iter().copied().fold(0.0f32, f32::max) * HOT_CHROMA);
+                    let wgt = smoothstep(BLOOM_LO, BLOOM_HI, hot) * BLOOM_GAIN;
+                    let c = grade(raw);
                     let cell = &mut acc[x / 4];
                     for k in 0..3 {
-                        cell[k] += c[k] * wgt;
+                        // Halo color drifts toward the magenta tint: searing
+                        // neon haze rather than plain white glow.
+                        cell[k] += (c[k] + (HIGHLIGHT[k] - c[k]) * HALO_TINT) * wgt;
                     }
                 }
             }
@@ -252,6 +290,14 @@ fn hash01(mut n: u32) -> f32 {
     (n >> 8) as f32 / 16_777_216.0
 }
 
+/// Hermite interpolation on `v` across `[lo, hi]`, clamped: the soft knee the
+/// bloom uses instead of a hard threshold.
+#[inline]
+fn smoothstep(lo: f32, hi: f32, v: f32) -> f32 {
+    let t = ((v - lo) / (hi - lo)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,13 +322,66 @@ mod tests {
     fn grade_pushes_highlights_toward_magenta() {
         let bright = [0.9f32; 3];
         let g = grade(bright);
-        // Magenta: red and blue lifted above green. The grade may overshoot
-        // slightly above 1.0; the final pass clamps on the u8 write.
+        // Hot magenta: red and blue lifted well above green, red dominant.
+        // The grade may overshoot slightly above 1.0; the final pass clamps
+        // on the u8 write.
         assert!(
             g[0] > g[1] && g[2] > g[1],
             "highlights must go magenta, got {g:?}"
         );
+        assert!(g[0] > g[2] - 0.1, "magenta leans red, got {g:?}");
         assert!(g[0] < 1.1 && g[2] < 1.1, "grade must stay bounded: {g:?}");
+    }
+
+    #[test]
+    fn grade_crushes_blacks_and_lifts_whites() {
+        // Contrast curve: the luma spread between dark and bright grows.
+        let dark = grade([0.15f32; 3]);
+        let bright = grade([0.85f32; 3]);
+        assert!(
+            dark[1] < 0.15,
+            "blacks must be crushed below source: {dark:?}"
+        );
+        let spread = bright[1] - dark[1];
+        assert!(spread > 0.40, "contrast must widen the luma band: {spread}");
+    }
+
+    #[test]
+    fn grade_boosts_chroma_of_midtones() {
+        let c = [0.5f32, 0.3, 0.4];
+        let before = dot_luma(c);
+        let before_c = c.iter().map(|v| (v - before).abs()).fold(0.0f32, f32::max);
+        let g = grade(c);
+        let after = dot_luma(g);
+        let after_c = g.iter().map(|v| (v - after).abs()).fold(0.0f32, f32::max);
+        assert!(
+            after_c > before_c * 1.1,
+            "saturation boost must widen chroma: {before_c} -> {after_c}"
+        );
+    }
+
+    #[test]
+    fn bloom_uses_soft_knee_and_no_dark_leak() {
+        // Black frame: the smoothstep knee stays at zero for unlit pixels.
+        let (w, h, qw, qh) = (32usize, 32usize, 8usize, 8usize);
+        let mut src = solid(w, h, [0, 0, 0]);
+        for y in 0..8 {
+            for x in 0..8 {
+                let i = (y * w + x) * 3;
+                src[i..i + 3].copy_from_slice(&[255, 250, 235]);
+            }
+        }
+        let mut bloom = vec![0.0f32; qw * qh * 3];
+        build_bloom(&src, &mut bloom, w, h, qw);
+        // A hot block feeds the halo, and the halo leans magenta (red and
+        // blue above green, red on top) instead of staying white.
+        assert!(bloom[0] > 0.0, "highlight cell must feed the bloom");
+        assert!(
+            bloom[0] > bloom[1] && bloom[2] > bloom[1] && bloom[0] > bloom[2],
+            "halo must be tinted hot magenta: {:?}",
+            &bloom[..3]
+        );
+        assert!(bloom.iter().all(|&v| v >= 0.0), "no negative bloom");
     }
 
     #[test]

@@ -215,15 +215,19 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     return vec4<f32>(out_c, 1.0);
 }
 
-// Cybernetic color grade: shadows drift toward blue/purple, highlights
-// toward magenta. Mirrors the CPU constants in `cyberpunk.rs`.
+// Cybernetic color grade: contrast curve, saturation boost, then split-tone
+// (shadows to deep indigo, highlights to hot magenta). Mirrors the CPU
+// constants in `cyberpunk.rs`.
 fn grade(c: vec3<f32>) -> vec3<f32> {
-    let l = dot(c, vec3<f32>(0.299, 0.587, 0.114));
-    let s = (1.0 - l) * (1.0 - l) * 0.55;
-    let h = l * l * 0.35;
-    let shadow = vec3<f32>(0.16, 0.10, 0.42);
-    let highlight = vec3<f32>(0.42, 0.10, 0.46);
-    return c + (shadow - c) * s + highlight * h;
+    var o = (c - vec3<f32>(0.5)) * 1.18 + vec3<f32>(0.5);
+    var l = dot(o, vec3<f32>(0.299, 0.587, 0.114));
+    o = l + (o - vec3<f32>(l)) * 1.25;
+    l = dot(o, vec3<f32>(0.299, 0.587, 0.114));
+    let s = (1.0 - l) * (1.0 - l) * 0.85;
+    let h = l * l * l * 0.60;
+    let shadow = vec3<f32>(0.08, 0.02, 0.45);
+    let highlight = vec3<f32>(0.72, 0.08, 0.58);
+    return o + (shadow - o) * s + (highlight - o) * h;
 }
 
 // Reconstructs the composited scene (background blend + light wrap + subject
@@ -389,12 +393,15 @@ fn scene_at(uv: vec2<f32>) -> vec3<f32> {
 }
 
 fn grade(c: vec3<f32>) -> vec3<f32> {
-    let l = dot(c, vec3<f32>(0.299, 0.587, 0.114));
-    let s = (1.0 - l) * (1.0 - l) * 0.55;
-    let h = l * l * 0.35;
-    let shadow = vec3<f32>(0.16, 0.10, 0.42);
-    let highlight = vec3<f32>(0.42, 0.10, 0.46);
-    return c + (shadow - c) * s + highlight * h;
+    var o = (c - vec3<f32>(0.5)) * 1.18 + vec3<f32>(0.5);
+    var l = dot(o, vec3<f32>(0.299, 0.587, 0.114));
+    o = l + (o - vec3<f32>(l)) * 1.25;
+    l = dot(o, vec3<f32>(0.299, 0.587, 0.114));
+    let s = (1.0 - l) * (1.0 - l) * 0.85;
+    let h = l * l * l * 0.60;
+    let shadow = vec3<f32>(0.08, 0.02, 0.45);
+    let highlight = vec3<f32>(0.72, 0.08, 0.58);
+    return o + (shadow - o) * s + (highlight - o) * h;
 }
 
 @fragment
@@ -411,9 +418,17 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
         }
     }
     let graded = grade(acc * 0.25);
-    let l = dot(graded, vec3<f32>(0.299, 0.587, 0.114));
-    let w = max(l - 0.62, 0.0) * 1.6;
-    return vec4<f32>(graded * w, 1.0);
+    // Soft knee on the RAW scene brightness: the max-channel term keeps
+    // neon magenta/cyan (~0.4 luma) in the halation while flat skin stays
+    // calm. Mirrors `BLOOM_LO/HI/GAIN/HOT_CHROMA` in `cyberpunk.rs`.
+    let raw = acc * 0.25;
+    let hot = max(dot(raw, vec3<f32>(0.299, 0.587, 0.114)), max(raw.r, max(raw.g, raw.b)) * 0.75);
+    let t = clamp((hot - 0.55) / (0.95 - 0.55), 0.0, 1.0);
+    let w = t * t * (3.0 - 2.0 * t) * 1.2;
+    // Halo drifts toward the magenta highlight tint: searing neon haze.
+    let highlight = vec3<f32>(0.72, 0.08, 0.58);
+    let halo = graded + (highlight - graded) * 0.45;
+    return vec4<f32>(halo * w, 1.0);
 }
 "#;
 
