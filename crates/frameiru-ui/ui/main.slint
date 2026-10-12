@@ -601,6 +601,10 @@ export component MainWindow inherits Window {
                         padding-right: 12px;
                         spacing: 10px;
                         alignment: space-between;
+                        // Cross-axis defaults to `stretch`, which pins the 32px
+                        // button to the banner's top edge (50px tall); center
+                        // it so the gaps above and below are equal.
+                        cross-axis-alignment: center;
 
                         Text {
                             text: root.sink_runtime_error != ""
