@@ -92,19 +92,34 @@ pub enum LoopbackStatus {
 }
 
 /// Enumerates v4l2loopback nodes that could not be opened (permission or
-/// gone) via the sysfs driver link, so they still surface as classified
-/// failures instead of silently vanishing.
+/// gone) via sysfs, so they still surface as classified failures instead of
+/// silently vanishing.
 fn is_loopback_sysfs(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
         return false;
     };
-    let driver = Path::new("/sys/class/video4linux")
-        .join(name)
-        .join("device")
-        .join("driver");
-    std::fs::read_link(&driver)
+    is_loopback_sysfs_node(&Path::new("/sys/class/video4linux").join(name))
+}
+
+/// True when `dir` (a `/sys/class/video4linux/videoN` dir) is a v4l2loopback
+/// node.
+///
+/// v4l2loopback registers its video devices without a parent device, so the
+/// `device` symlink physical cameras have is absent; the reliable markers are
+/// the per-device attributes the module creates (`state` on 0.13+, and
+/// `format`/`buffers`/`max_openers` already on 0.12.x). The `device/driver`
+/// link is still honored where some build happens to expose it.
+fn is_loopback_sysfs_node(dir: &Path) -> bool {
+    let driver = dir.join("device").join("driver");
+    if std::fs::read_link(&driver)
         .map(|target| target.to_string_lossy().contains("v4l2loopback"))
         .unwrap_or(false)
+    {
+        return true;
+    }
+    ["state", "format", "buffers", "max_openers"]
+        .iter()
+        .any(|attr| dir.join(attr).is_file())
 }
 
 /// All v4l2loopback nodes currently visible, in discovery order.
@@ -391,5 +406,48 @@ mod tests {
     fn module_missing_when_no_nodes_and_no_sysfs_dir() {
         // Degenerate local check: the constants still line up.
         assert!(!module_loaded() || Path::new(MODULE_SYSFS).is_dir());
+    }
+
+    #[test]
+    fn sysfs_markers_identify_loopback_nodes_without_a_device_link() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT_TMP: AtomicU32 = AtomicU32::new(0);
+        let n = NEXT_TMP.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("frameiru-loopback-test-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create scratch dir");
+        // The v4l2loopback device layout (no `device` symlink at all).
+        let node_linkless = dir.join("video10");
+        std::fs::create_dir_all(&node_linkless).unwrap();
+        std::fs::write(node_linkless.join("state"), "output\n").unwrap();
+        std::fs::write(node_linkless.join("format"), "YUYV:640x480@30\n").unwrap();
+        std::fs::write(node_linkless.join("buffers"), "2\n").unwrap();
+        std::fs::write(node_linkless.join("max_openers"), "10\n").unwrap();
+        assert!(is_loopback_sysfs_node(&node_linkless));
+        // 0.12.x-style layout: no `state` yet.
+        let node_012 = dir.join("video11");
+        std::fs::create_dir_all(&node_012).unwrap();
+        std::fs::write(node_012.join("format"), "YUYV:640x480@30\n").unwrap();
+        assert!(is_loopback_sysfs_node(&node_012));
+        // Physical camera with a driver link elsewhere: not loopback.
+        let node_uvc = dir.join("video0");
+        std::fs::create_dir_all(node_uvc.join("device")).unwrap();
+        std::os::unix::fs::symlink(
+            "/sys/bus/usb/drivers/uvcvideo",
+            node_uvc.join("device").join("driver"),
+        )
+        .unwrap();
+        assert!(!is_loopback_sysfs_node(&node_uvc));
+        // A driver link to v4l2loopback still counts (older builds).
+        let node_linked = dir.join("video12");
+        std::fs::create_dir_all(node_linked.join("device")).unwrap();
+        std::os::unix::fs::symlink(
+            "/sys/bus/platform/drivers/v4l2loopback",
+            node_linked.join("device").join("driver"),
+        )
+        .unwrap();
+        assert!(is_loopback_sysfs_node(&node_linked));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -211,7 +211,8 @@ fn run_checks(boot: &setup::BootConfig) -> Vec<Check> {
         });
     }
 
-    // 3. Loopback node present in sysfs (driver link), plus its card name.
+    // 3. Loopback node present in sysfs (v4l2loopback markers), plus its
+    // card name.
     if nodes.is_empty() {
         let level = if module_loaded {
             Level::Fail
@@ -355,7 +356,7 @@ fn run_checks(boot: &setup::BootConfig) -> Vec<Check> {
 }
 
 /// Enumerates v4l2loopback nodes from the sysfs class dir; each entry needs
-/// `videoN/device/driver` to point into the v4l2loopback driver.
+/// to be identifiable as a v4l2loopback node (see [`is_loopback_sysfs_node`]).
 fn sysfs_loopback_nodes(class_dir: &Path) -> Vec<(u32, String)> {
     let mut nodes = Vec::new();
     let Ok(entries) = std::fs::read_dir(class_dir) else {
@@ -372,11 +373,7 @@ fn sysfs_loopback_nodes(class_dir: &Path) -> Vec<(u32, String)> {
         else {
             continue;
         };
-        let driver = dir.join("device").join("driver");
-        let is_loopback = std::fs::read_link(&driver)
-            .map(|target| target.to_string_lossy().contains("v4l2loopback"))
-            .unwrap_or(false);
-        if !is_loopback {
+        if !is_loopback_sysfs_node(&dir) {
             continue;
         }
         let card = std::fs::read_to_string(dir.join("name"))
@@ -386,6 +383,27 @@ fn sysfs_loopback_nodes(class_dir: &Path) -> Vec<(u32, String)> {
     }
     nodes.sort_by_key(|(nr, _)| *nr);
     nodes
+}
+
+/// True when `dir` (a `/sys/class/video4linux/videoN` dir) is a v4l2loopback
+/// node.
+///
+/// v4l2loopback registers its video devices without a parent device, so the
+/// `device` symlink physical cameras have is absent; the reliable markers are
+/// the per-device attributes the module creates (`state` on 0.13+, and
+/// `format`/`buffers`/`max_openers` already on 0.12.x). The `device/driver`
+/// link is still honored where some build happens to expose it.
+fn is_loopback_sysfs_node(dir: &Path) -> bool {
+    let driver = dir.join("device").join("driver");
+    if std::fs::read_link(&driver)
+        .map(|target| target.to_string_lossy().contains("v4l2loopback"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    ["state", "format", "buffers", "max_openers"]
+        .iter()
+        .any(|attr| dir.join(attr).is_file())
 }
 
 /// Membership in the `video` group: the user's gid list (from
@@ -494,6 +512,54 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create scratch dir");
         dir
+    }
+
+    #[test]
+    fn loops_back_nodes_by_sysfs_markers_not_the_device_link() {
+        let dir = test_dir("nodes");
+        // v4l2loopback 0.12+: format/buffers/max_openers, no `state`.
+        let node_012 = dir.join("video5");
+        std::fs::create_dir_all(&node_012).unwrap();
+        std::fs::write(node_012.join("format"), "YUYV:640x480@30\n").unwrap();
+        std::fs::write(node_012.join("buffers"), "2\n").unwrap();
+        std::fs::write(node_012.join("max_openers"), "10\n").unwrap();
+        std::fs::write(node_012.join("name"), "Frameiru\n").unwrap();
+        // v4l2loopback 0.13+: `state` at least.
+        let node_013 = dir.join("video6");
+        std::fs::create_dir_all(&node_013).unwrap();
+        std::fs::write(node_013.join("state"), "output\n").unwrap();
+        std::fs::write(node_013.join("name"), "Dummy video device (0x0006)\n").unwrap();
+        // Driver-link detection still works where the link exists.
+        let node_link = dir.join("video7");
+        std::fs::create_dir_all(node_link.join("device")).unwrap();
+        std::os::unix::fs::symlink(
+            "/sys/bus/pci/drivers/v4l2loopback",
+            node_link.join("device").join("driver"),
+        )
+        .unwrap();
+        std::fs::write(node_link.join("name"), "via-link\n").unwrap();
+        // Physical camera with the link pointing elsewhere; plain node without
+        // any marker: both must be excluded.
+        let node_uvc = dir.join("video8");
+        std::fs::create_dir_all(node_uvc.join("device")).unwrap();
+        std::os::unix::fs::symlink(
+            "/sys/bus/usb/drivers/uvcvideo",
+            node_uvc.join("device").join("driver"),
+        )
+        .unwrap();
+        std::fs::write(node_uvc.join("name"), "Anker PowerConf C200\n").unwrap();
+        std::fs::create_dir_all(dir.join("video9")).unwrap();
+
+        let nodes = sysfs_loopback_nodes(&dir);
+        assert_eq!(
+            nodes,
+            vec![
+                (5, "Frameiru".into()),
+                (6, "Dummy video device (0x0006)".into()),
+                (7, "via-link".into()),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
