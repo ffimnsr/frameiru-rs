@@ -59,6 +59,81 @@ fn wait_until(what: &str, timeout: Duration, pred: impl Fn() -> bool) {
     panic!("timed out waiting for {what}");
 }
 
+/// Sink that always fails, to exercise runtime sink-error reporting.
+struct FailingSink;
+
+impl FrameSink for FailingSink {
+    fn write_frame(&mut self, _frame: &FrameBuffer) -> Result<(), FrameiruError> {
+        Err(FrameiruError::Io(std::io::Error::other("device gone")))
+    }
+}
+
+#[test]
+fn sink_failures_expose_runtime_error() {
+    let engine = Engine::start(
+        config(),
+        Box::new(MockSource::new(res()).unwrap()),
+        None,
+        Box::new(CpuCompositor::new()),
+        Box::new(FailingSink),
+    )
+    .unwrap();
+    let handle = engine.handle();
+
+    wait_until("sink error surfaced", Duration::from_secs(10), || {
+        handle.sink_error().is_some()
+    });
+    let err = handle.sink_error().expect("sink error set");
+    assert!(
+        err.contains("device gone"),
+        "sink error should carry the original message, got {err:?}"
+    );
+    engine.shutdown();
+    assert!(!handle.is_running());
+}
+
+#[test]
+fn swap_sink_hot_replaces_the_running_sink() {
+    let first = RecordingSink::default();
+    let engine = Engine::start(
+        config(),
+        Box::new(MockSource::new(res()).unwrap()),
+        None,
+        Box::new(CpuCompositor::new()),
+        Box::new(first.clone()),
+    )
+    .unwrap();
+    let handle = engine.handle();
+
+    wait_until(
+        "first sink receives frames",
+        Duration::from_secs(10),
+        || first.inner.lock().expect("sink mutex poisoned").len() >= 10,
+    );
+    let first_count = first.inner.lock().expect("sink mutex poisoned").len();
+
+    let second = RecordingSink::default();
+    handle
+        .swap_sink(Box::new(second.clone()))
+        .expect("swap accepted");
+
+    wait_until(
+        "second sink receives frames",
+        Duration::from_secs(10),
+        || second.inner.lock().expect("sink mutex poisoned").len() >= 10,
+    );
+
+    // The compose thread is the only writer: once the second sink saw a
+    // frame, the first sink can no longer grow. Allow the <=2 frames the
+    // capture/compose threads may have had in flight at swap time.
+    let first_after = first.inner.lock().expect("sink mutex poisoned").len();
+    assert!(
+        first_after <= first_count + 2,
+        "first sink kept receiving after swap: {first_count} -> {first_after}"
+    );
+    engine.shutdown();
+}
+
 #[test]
 fn frames_flow_source_to_sink_with_preview() {
     let source = MockSource::new(res()).unwrap();

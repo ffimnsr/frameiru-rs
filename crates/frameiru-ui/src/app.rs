@@ -4,131 +4,34 @@
 
 use std::cell::RefCell;
 use std::fs::File;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use anyhow::{bail, Context as _};
+use anyhow::bail;
+#[cfg(feature = "v4l2")]
+use anyhow::Context as _;
 use frameiru_core::format::Resolution;
 use frameiru_core::traits::{FrameSink, FrameSource, Segmenter};
 use frameiru_core::{BackgroundMode, FrameBuffer, OverlayMode};
 use frameiru_pipeline::{Engine, PipelineConfig};
-use frameiru_webcam_utils::controls::{
-    find_control, format_bool, parse_bool, ControlInfo, ControlKind,
-};
-use frameiru_webcam_utils::{detect, fov, v4l2, vendor, Error as WebcamError};
+use frameiru_webcam_utils::controls::ControlInfo;
 use slint::{ComponentHandle, SharedString, VecModel};
+
+use crate::devices::{detect_devices, DeviceEntry};
+use crate::virtual_camera::{self, SinkState};
+use crate::webcam;
 
 slint::include_modules!();
 
 const PREVIEW_WIDTH: u32 = 640;
 const PREVIEW_HEIGHT: u32 = 480;
-
-/// Represents an available video input device (mock source or physical V4L2 camera).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DeviceEntry {
-    /// Device identifier: `(mock)` or `/dev/videoN`.
-    pub id: String,
-    /// Friendly user-visible label: e.g. "Anker PowerConf C200 (/dev/video0)".
-    pub display_name: String,
-    /// True for supported webcams whose vendor controls are exposed in the drawer.
-    pub is_anker_c200: bool,
-}
-
-/// Cleans raw V4L2 card/node name to remove truncated duplicate model strings.
-/// E.g. "Anker PowerConf C200: Anker Pow" -> "Anker PowerConf C200".
-pub fn clean_device_name(name: &str) -> String {
-    let trimmed = name.trim();
-    if let Some((head, tail)) = trimmed.split_once(':') {
-        let h = head.trim();
-        let t = tail.trim();
-        if !h.is_empty() && (h.starts_with(t) || t.starts_with(h)) {
-            return if h.len() >= t.len() {
-                h.to_string()
-            } else {
-                t.to_string()
-            };
-        }
-    }
-    trimmed.to_string()
-}
-
-/// Extracts trailing digits from a device path for natural numeric sorting.
-pub fn extract_trailing_number(path: &str) -> Option<u32> {
-    path.rsplit(|c: char| !c.is_ascii_digit())
-        .next()
-        .and_then(|digits| digits.parse::<u32>().ok())
-}
-
-/// Enumerate available capture devices: filters out metadata-only and loopback devices.
-pub fn detect_devices() -> Vec<DeviceEntry> {
-    let mut devices = vec![DeviceEntry {
-        id: "(mock)".into(),
-        display_name: "Mock Camera ((mock))".into(),
-        is_anker_c200: false,
-    }];
-
-    #[cfg(feature = "v4l2")]
-    {
-        let mut real_devices = Vec::new();
-        for node in frameiru_capture::v4l::context::enum_devices() {
-            let path = node.path();
-            // Verify device can be opened and actually supports VIDEO_CAPTURE
-            let Ok(dev) = frameiru_capture::v4l::Device::with_path(path) else {
-                continue;
-            };
-            let Ok(caps) = dev.query_caps() else {
-                continue;
-            };
-            if !caps
-                .capabilities
-                .contains(frameiru_capture::v4l::capability::Flags::VIDEO_CAPTURE)
-            {
-                continue;
-            }
-            // Skip loopback devices (e.g. Frameiru virtual camera sink)
-            if caps.driver.starts_with("v4l2 loopback") || caps.card.contains("Frameiru") {
-                continue;
-            }
-
-            let raw_name = if !caps.card.trim().is_empty() {
-                caps.card
-            } else if let Some(name) = node.name() {
-                name
-            } else {
-                "Camera".to_string()
-            };
-
-            let clean_name = clean_device_name(&raw_name);
-            let display_name = format!("{clean_name} ({})", path.display());
-            let is_anker_c200 = detect::is_anker_c200(path);
-            real_devices.push((
-                path.to_string_lossy().to_string(),
-                display_name,
-                is_anker_c200,
-            ));
-        }
-
-        real_devices.sort_by(|a, b| {
-            let num_a = extract_trailing_number(&a.0);
-            let num_b = extract_trailing_number(&b.0);
-            match (num_a, num_b) {
-                (Some(na), Some(nb)) => na.cmp(&nb),
-                _ => a.0.cmp(&b.0),
-            }
-        });
-
-        for (id, display_name, is_anker_c200) in real_devices {
-            devices.push(DeviceEntry {
-                id,
-                display_name,
-                is_anker_c200,
-            });
-        }
-    }
-
-    devices
-}
+const PREVIEW_RESOLUTION: Resolution = Resolution {
+    width: PREVIEW_WIDTH,
+    height: PREVIEW_HEIGHT,
+};
 
 /// Application state bridging the pipeline and the Slint window.
 pub struct App {
@@ -138,6 +41,14 @@ pub struct App {
     model: Option<std::path::PathBuf>,
     model_input: Resolution,
     has_segmenter: bool,
+    /// Loopback node the running engine publishes to (`None` = mock sink).
+    sink_path: Option<PathBuf>,
+    /// Last virtual-camera probe (displayed whenever the engine is idle).
+    sink_state: SinkState,
+    /// A privileged load/retry is in flight; the banner button is disabled.
+    sink_action_busy: bool,
+    /// Hot-attach watcher while the engine runs on a mock sink (layer 5).
+    sink_watcher: Option<virtual_camera::SinkWatcher>,
 }
 
 impl App {
@@ -184,8 +95,12 @@ impl App {
             .is_some_and(|d| d.is_anker_c200);
         window.set_webcam_available(c200_selected);
         if c200_selected {
-            refresh_webcam_state(&window, &devices);
+            webcam::refresh_webcam_state(&window, &devices);
         }
+
+        // Virtual camera status: honest banner + pill from the start.
+        let sink_state = SinkState::probe();
+        virtual_camera::apply(&window, &virtual_camera::view_for(&sink_state, ""));
 
         Self {
             window,
@@ -194,6 +109,10 @@ impl App {
             model,
             model_input,
             has_segmenter: false,
+            sink_path: None,
+            sink_state,
+            sink_action_busy: false,
+            sink_watcher: None,
         }
     }
 
@@ -219,14 +138,14 @@ impl App {
         let a = app.clone();
         app.borrow().window.on_stop_pipeline(move || {
             let mut app = a.borrow_mut();
-            if let Some(engine) = app.engine.take() {
-                engine.shutdown();
-            }
-            app.has_segmenter = false;
-            app.window.set_is_running(false);
-            app.window.set_fps_text("0.0".into());
-            app.window.set_latency_text("0.0ms".into());
-            app.window.set_error_text("".into());
+            Self::stop_engine(&mut app);
+        });
+
+        // Virtual camera banner action: LOAD / RELOAD (pkexec helper) or
+        // RETRY (fresh probe). Runs off-thread so the UI stays live.
+        let a = app.clone();
+        app.borrow().window.on_enable_virtual_camera(move || {
+            Self::request_virtual_camera(&a);
         });
 
         let a = app.clone();
@@ -236,7 +155,7 @@ impl App {
             let c200_selected = app.selected_webcam().is_some();
             app.window.set_webcam_available(c200_selected);
             if c200_selected {
-                refresh_webcam_state(&app.window, &app.devices);
+                webcam::refresh_webcam_state(&app.window, &app.devices);
                 app.window.set_webcam_drawer_open(true);
             } else {
                 app.window.set_webcam_drawer_open(false);
@@ -246,19 +165,23 @@ impl App {
         // Webcam drawer controls (Anker C200 only; callbacks are inert otherwise).
         let a = app.clone();
         app.borrow().window.on_webcam_set_fov(move |value| {
-            Self::set_webcam_control(&a, webcam_control("fov"), value.as_str());
+            Self::set_webcam_control(&a, webcam::webcam_control("fov"), value.as_str());
         });
 
         let a = app.clone();
         app.borrow().window.on_webcam_set_hdr(move |value| {
-            Self::set_webcam_control(&a, webcam_control("hdr"), if value { "on" } else { "off" });
+            Self::set_webcam_control(
+                &a,
+                webcam::webcam_control("hdr"),
+                if value { "on" } else { "off" },
+            );
         });
 
         let a = app.clone();
         app.borrow().window.on_webcam_set_flip(move |value| {
             Self::set_webcam_control(
                 &a,
-                webcam_control("horizontal_flip"),
+                webcam::webcam_control("horizontal_flip"),
                 if value { "on" } else { "off" },
             );
         });
@@ -267,7 +190,7 @@ impl App {
         app.borrow().window.on_webcam_set_vertical(move |value| {
             Self::set_webcam_control(
                 &a,
-                webcam_control("vertical_screen"),
+                webcam::webcam_control("vertical_screen"),
                 if value { "on" } else { "off" },
             );
         });
@@ -278,14 +201,14 @@ impl App {
             .on_webcam_set_anti_flicker(move |value| {
                 Self::set_webcam_control(
                     &a,
-                    webcam_control("anti_flicker"),
+                    webcam::webcam_control("anti_flicker"),
                     if value { "1" } else { "0" },
                 );
             });
 
         let a = app.clone();
         app.borrow().window.on_webcam_set_brightness(move |value| {
-            Self::set_webcam_control(&a, webcam_control("brightness"), &value.to_string());
+            Self::set_webcam_control(&a, webcam::webcam_control("brightness"), &value.to_string());
         });
 
         let a = app.clone();
@@ -351,72 +274,332 @@ impl App {
         }
     }
 
-    fn start_pipeline(app: &Rc<RefCell<App>>) {
-        let mut app = app.borrow_mut();
-        if app.engine.is_some() {
+    /// Stops the running engine and resets the runtime UI state; the sink
+    /// view reverts to the last probe. Idempotent.
+    fn stop_engine(app: &mut App) {
+        if let Some(engine) = app.engine.take() {
+            engine.shutdown();
+        }
+        app.has_segmenter = false;
+        app.sink_path = None;
+        app.sink_watcher = None;
+        app.window.set_is_running(false);
+        app.window.set_fps_text("0.0".into());
+        app.window.set_latency_text("0.0ms".into());
+        app.window.set_error_text("".into());
+        app.window.set_sink_runtime_error("".into());
+        virtual_camera::apply(&app.window, &virtual_camera::view_for(&app.sink_state, ""));
+    }
+
+    /// Banner action handler: LOAD/RELOAD via the pkexec helper, or a fresh
+    /// probe for RETRY states. Runs the helper off the UI thread. With the
+    /// hot-attach watcher (layer 5) an engine that stayed running simply
+    /// picks up the new device without a restart; only a stopped engine that
+    /// we stopped for a module reload gets restarted.
+    fn request_virtual_camera(app: &Rc<RefCell<App>>) {
+        let restart_needed = {
+            let mut a = app.borrow_mut();
+            if a.sink_action_busy {
+                return;
+            }
+            a.sink_action_busy = true;
+            a.window.set_sink_action_busy(true);
+            // A module reload needs the module free, so release our own
+            // writer first; that engine must then be restarted.
+            let restart_needed = a.engine.is_some() && a.sink_path.is_some();
+            if restart_needed {
+                Self::stop_engine(&mut a);
+            }
+            restart_needed
+        };
+
+        // Fresh probe while nothing of ours holds the device.
+        let state = {
+            let a = app.borrow();
+            virtual_camera::refresh(&a.window)
+        };
+
+        if !state.needs_helper() {
+            // Retry-only states: nothing privileged to do, probe is applied.
+            // A running mock engine self-heals via the watcher; an idle
+            // engine picks the device up on its next START.
+            let mut a = app.borrow_mut();
+            a.sink_action_busy = false;
+            a.window.set_sink_action_busy(false);
             return;
         }
-        app.window.set_error_text("".into());
 
-        let source: Box<dyn FrameSource> = match build_source(&app.devices, &app.window) {
-            Ok(source) => source,
-            Err(e) => {
-                app.window.set_is_running(false);
-                app.window
-                    .set_error_text(format!("Source error: {e}").into());
-                return;
+        let helper = virtual_camera::find_helper();
+        if helper.is_none() {
+            // No privileged helper anywhere: show the manual fallback and
+            // bail out immediately.
+            let fail_msg = format!("LOAD FAILED — {}", virtual_camera::run_helper(None).output);
+            {
+                let mut a = app.borrow_mut();
+                a.sink_action_busy = false;
+                a.window.set_sink_action_busy(false);
+                a.window.set_sink_message(fail_msg.clone().into());
             }
-        };
-        let actual_resolution = source.resolution();
-        let (segmenter, has_segmenter) = match build_segmenter(&app.model, app.model_input) {
-            Ok(Some(s)) => (Some(s), true),
-            Ok(None) => (None, false),
-            Err(e) => {
-                app.window.set_is_running(false);
-                app.window
-                    .set_error_text(format!("Model error: {e}").into());
-                return;
+            if restart_needed {
+                Self::start_pipeline(app);
+                // start_pipeline re-applies the state view; keep the detail.
+                app.borrow()
+                    .window
+                    .set_sink_message(fail_msg.clone().into());
             }
-        };
-        app.has_segmenter = has_segmenter;
+            return;
+        }
+        app.borrow()
+            .window
+            .set_sink_message("Waiting for authorization…".into());
 
-        let sink: Box<dyn FrameSink> = build_sink(actual_resolution);
-        let compositor = frameiru_compose::new_compositor();
+        let slot: Arc<Mutex<Option<virtual_camera::HelperOutcome>>> = Arc::new(Mutex::new(None));
+        {
+            let slot = Arc::clone(&slot);
+            std::thread::spawn(move || {
+                let outcome = virtual_camera::run_helper(helper.as_deref());
+                *slot.lock().expect("helper slot mutex poisoned") = Some(outcome);
+            });
+        }
+        Self::poll_helper_slot(app.clone(), slot, restart_needed);
+    }
 
-        match Engine::start(
-            PipelineConfig {
-                max_fps: 30,
-                infer_max_fps: 30,
-                ..Default::default()
-            },
-            source,
-            segmenter,
-            compositor,
-            sink,
+    /// Polls the helper thread's outcome on the UI thread (a `slint::Timer`
+    /// may capture `Rc<RefCell<App>>` because it never leaves this thread),
+    /// then re-probes, re-applies the banner, and restarts the engine when it
+    /// was stopped for a module reload.
+    fn poll_helper_slot(
+        app: Rc<RefCell<App>>,
+        slot: Arc<Mutex<Option<virtual_camera::HelperOutcome>>>,
+        restart_needed: bool,
+    ) {
+        const POLL_EVERY: Duration = Duration::from_millis(150);
+        const MAX_ATTEMPTS: u32 = 120; // ~18s for the auth dialog
+
+        fn poll_once(
+            app: &Rc<RefCell<App>>,
+            slot: Arc<Mutex<Option<virtual_camera::HelperOutcome>>>,
+            restart_needed: bool,
+            attempts_left: u32,
         ) {
-            Ok(engine) => {
-                let rx = engine.handle().subscribe();
-                let handle = engine.handle();
-                // Every start defaults the effect to passthrough.
-                if let Err(e) = handle.update_background(BackgroundMode::Passthrough) {
-                    eprintln!("passthrough default rejected: {e}");
+            let done = slot.lock().expect("helper slot mutex poisoned").take();
+            match done {
+                Some(outcome) => {
+                    let failure_output = (!outcome.ok).then(|| outcome.output.clone());
+                    let fail_msg = failure_output
+                        .as_ref()
+                        .map(|output| format!("LOAD FAILED — {output}."));
+                    let mut a = app.borrow_mut();
+                    a.sink_action_busy = false;
+                    a.window.set_sink_action_busy(false);
+                    if outcome.ok {
+                        // No full probe here: the watcher may have hot-attached
+                        // a real sink during the auth dialog, and probing our
+                        // own device would report it as busy. Show what the
+                        // engine actually publishes to.
+                        let state = App::applied_sink_state(&a);
+                        a.sink_state = state.clone();
+                        virtual_camera::apply(&a.window, &virtual_camera::view_for(&state, ""));
+                    } else if let Some(msg) = &fail_msg {
+                        a.window.set_sink_message(msg.clone().into());
+                    }
+                    drop(a);
+                    if restart_needed {
+                        App::start_pipeline(app);
+                        // start_pipeline re-applies the state view, which
+                        // would hide the failure; re-surface the detail.
+                        if let Some(msg) = &fail_msg {
+                            app.borrow().window.set_sink_message(msg.clone().into());
+                        }
+                    } else if outcome.ok {
+                        // Engine kept running on a mock sink: the watcher will
+                        // hot-attach; nudge it now instead of waiting a tick.
+                        App::sink_watch_tick(app);
+                    }
                 }
-                app.window.set_active_effect("passthrough".into());
-                // Re-apply the selected overlay (the engine starts with none).
-                if let Some(overlay) = parse_overlay(&app.window.get_overlay_effect()) {
-                    handle.update_overlay(overlay).unwrap_or_else(|e| {
-                        eprintln!("overlay apply after start rejected: {e}");
+                None if attempts_left > 1 => {
+                    let slot = Arc::clone(&slot);
+                    let app = app.clone();
+                    slint::Timer::single_shot(POLL_EVERY, move || {
+                        poll_once(&app, slot, restart_needed, attempts_left - 1);
                     });
                 }
-                app.window.set_is_running(true);
-                app.window.set_error_text("".into());
-                Self::pump_preview(app.window.as_weak(), rx, handle);
-                app.engine = Some(engine);
+                None => {
+                    // Give up (dialog left open past the budget): restore the
+                    // engine we stopped for a reload, stay quiet otherwise.
+                    // Refresh-without-probe for the same reason as above: the
+                    // engine may already publish via the watcher.
+                    let mut a = app.borrow_mut();
+                    a.sink_action_busy = false;
+                    a.window.set_sink_action_busy(false);
+                    let state = App::applied_sink_state(&a);
+                    a.sink_state = state.clone();
+                    virtual_camera::apply(&a.window, &virtual_camera::view_for(&state, ""));
+                    drop(a);
+                    if restart_needed {
+                        App::start_pipeline(app);
+                    }
+                }
             }
-            Err(e) => {
-                app.window.set_is_running(false);
-                app.window
-                    .set_error_text(format!("Start failed: {e}").into());
+        }
+
+        poll_once(&app, slot, restart_needed, MAX_ATTEMPTS);
+    }
+
+    fn start_pipeline(app: &Rc<RefCell<App>>) {
+        // The watcher (hot sink attach while the engine runs on a mock sink)
+        // starts after the engine is up; keep the borrow short for that.
+        let watch_needed = {
+            let mut app = app.borrow_mut();
+            if app.engine.is_some() {
+                return;
+            }
+            app.window.set_error_text("".into());
+
+            let source: Box<dyn FrameSource> = match build_source(&app.devices, &app.window) {
+                Ok(source) => source,
+                Err(e) => {
+                    app.window.set_is_running(false);
+                    app.window
+                        .set_error_text(format!("Source error: {e}").into());
+                    return;
+                }
+            };
+            let actual_resolution = source.resolution();
+            let (segmenter, has_segmenter) = match build_segmenter(&app.model, app.model_input) {
+                Ok(Some(s)) => (Some(s), true),
+                Ok(None) => (None, false),
+                Err(e) => {
+                    app.window.set_is_running(false);
+                    app.window
+                        .set_error_text(format!("Model error: {e}").into());
+                    return;
+                }
+            };
+            app.has_segmenter = has_segmenter;
+
+            // Fresh probe: nothing of ours holds the loopback device yet, so
+            // the open test reflects the real world (another app, perms, ...).
+            app.sink_state = SinkState::probe();
+            let (sink, sink_path) = build_sink(actual_resolution);
+            app.sink_path = sink_path;
+            let compositor = frameiru_compose::new_compositor();
+
+            match Engine::start(
+                PipelineConfig {
+                    max_fps: 30,
+                    infer_max_fps: 30,
+                    ..Default::default()
+                },
+                source,
+                segmenter,
+                compositor,
+                sink,
+            ) {
+                Ok(engine) => {
+                    let rx = engine.handle().subscribe();
+                    let handle = engine.handle();
+                    // Every start defaults the effect to passthrough.
+                    if let Err(e) = handle.update_background(BackgroundMode::Passthrough) {
+                        eprintln!("passthrough default rejected: {e}");
+                    }
+                    app.window.set_active_effect("passthrough".into());
+                    // Re-apply the selected overlay (the engine starts with none).
+                    if let Some(overlay) = parse_overlay(&app.window.get_overlay_effect()) {
+                        handle.update_overlay(overlay).unwrap_or_else(|e| {
+                            eprintln!("overlay apply after start rejected: {e}");
+                        });
+                    }
+                    app.window.set_is_running(true);
+                    app.window.set_error_text("".into());
+                    app.window.set_sink_runtime_error("".into());
+                    // Reflect the sink the engine actually publishes to.
+                    let state = Self::applied_sink_state(&app);
+                    app.sink_state = state.clone();
+                    virtual_camera::apply(&app.window, &virtual_camera::view_for(&state, ""));
+                    Self::pump_preview(app.window.as_weak(), rx, handle);
+                    app.engine = Some(engine);
+                    // Watch for a loopback device only when publishing to
+                    // nothing yet (mock sink) — a real sink is already live.
+                    app.sink_path.is_none()
+                }
+                Err(e) => {
+                    app.sink_path = None;
+                    app.window.set_is_running(false);
+                    app.window
+                        .set_error_text(format!("Start failed: {e}").into());
+                    false
+                }
+            }
+        };
+        if watch_needed {
+            Self::start_sink_watch(app);
+        }
+    }
+
+    /// Starts the hot-attach watcher (1s poll) while the engine runs on a
+    /// mock sink; the moment a usable loopback device appears it is swapped
+    /// in without restarting the engine.
+    fn start_sink_watch(app: &Rc<RefCell<App>>) {
+        let mut a = app.borrow_mut();
+        if a.engine.is_none() || a.sink_path.is_some() || a.sink_watcher.is_some() {
+            return;
+        }
+        let watcher = virtual_camera::SinkWatcher::new();
+        let ticker = app.clone();
+        watcher.start(Duration::from_secs(1), move || {
+            Self::sink_watch_tick(&ticker)
+        });
+        a.sink_watcher = Some(watcher);
+    }
+
+    /// The state the UI should show given what the engine actually publishes
+    /// to: a live loopback node reads as Ready (probing would misreport our
+    /// own device as busy), otherwise the last probe stands.
+    fn applied_sink_state(app: &App) -> SinkState {
+        match &app.sink_path {
+            Some(path) => SinkState::Ready {
+                path: path.clone(),
+                exclusive: loopback_exclusive_caps(),
+            },
+            None => app.sink_state.clone(),
+        }
+    }
+
+    /// One watcher tick: attach a real sink when possible, and reflect any
+    /// state change (Attached or failing probe) in the banner/pill.
+    fn sink_watch_tick(app: &Rc<RefCell<App>>) {
+        let event = {
+            let mut a = app.borrow_mut();
+            let handle = a.engine.as_ref().map(|e| e.handle());
+            let Some(handle) = handle else {
+                return;
+            };
+            let Some(watcher) = a.sink_watcher.as_mut() else {
+                return;
+            };
+            let resolution = handle.last_resolution().unwrap_or(PREVIEW_RESOLUTION);
+            watcher.tick(&handle, resolution)
+        };
+        let Some(event) = event else {
+            return;
+        };
+
+        let mut a = app.borrow_mut();
+        match event {
+            virtual_camera::WatchEvent::Attached { path } => {
+                // Live real sink: stop watching and show the honest Ready state.
+                a.sink_watcher = None;
+                a.sink_path = Some(path.clone());
+                a.sink_state = SinkState::Ready {
+                    path,
+                    exclusive: loopback_exclusive_caps(),
+                };
+                virtual_camera::apply(&a.window, &virtual_camera::view_for(&a.sink_state, ""));
+            }
+            virtual_camera::WatchEvent::Probe(state) => {
+                a.sink_state = state.clone();
+                virtual_camera::apply(&a.window, &virtual_camera::view_for(&state, ""));
             }
         }
     }
@@ -447,6 +630,7 @@ impl App {
                             Some((
                                 format!("{:.1}", m.composite_fps),
                                 format!("{:.1}ms", m.latency_us as f64 / 1000.0),
+                                handle.sink_error(),
                             ))
                         } else {
                             None
@@ -462,9 +646,13 @@ impl App {
                                 {
                                     win.set_preview(image);
                                 }
-                                if let Some((fps, lat)) = telemetry {
+                                if let Some((fps, lat, sink_err)) = telemetry {
                                     win.set_fps_text(fps.into());
                                     win.set_latency_text(lat.into());
+                                    // Sink write failures surface as a red
+                                    // SINK: ERROR pill + banner (cleared on
+                                    // recovery by the pipeline).
+                                    win.set_sink_runtime_error(sink_err.unwrap_or_default().into());
                                 }
                             }
                             is_rendering_flag.store(false, Ordering::Release);
@@ -503,119 +691,11 @@ impl App {
                 return;
             }
         };
-        if let Err(e) = write_webcam_value(&fd, info, value) {
+        if let Err(e) = webcam::write_webcam_value(&fd, info, value) {
             app.window
                 .set_webcam_error(format!("set {} failed: {e:#}", info.name).into());
         }
-        push_webcam_control(&app.window, info, &fd);
-    }
-}
-
-/// Returns the statically registered control of `name` (always present).
-fn webcam_control(name: &str) -> &'static ControlInfo {
-    find_control(name).expect("webcam control registry is static")
-}
-
-/// Reads the current value of one control as display text.
-fn read_webcam_value(fd: &File, info: &ControlInfo) -> Result<String, WebcamError> {
-    match info.kind {
-        ControlKind::VendorBool => Ok(format_bool(vendor::get_bool(fd, info.id as u8)?).into()),
-        ControlKind::VendorU8 => Ok(vendor::get_u8(fd, info.id as u8)?.to_string()),
-        ControlKind::VendorFov => Ok(fov::describe_value(fov::get(fd)?)),
-        ControlKind::V4l2Bool => Ok(format_bool(v4l2::get(fd, info.id)? != 0).into()),
-        ControlKind::V4l2Int | ControlKind::V4l2Menu => Ok(v4l2::get(fd, info.id)?.to_string()),
-    }
-}
-
-/// Writes one control from its display text (mirrors the CLI `set` behavior).
-fn write_webcam_value(fd: &File, info: &ControlInfo, value: &str) -> Result<(), WebcamError> {
-    let invalid = || WebcamError::InvalidValue {
-        name: info.name.to_owned(),
-        value: value.to_owned(),
-    };
-    match info.kind {
-        ControlKind::VendorBool => {
-            let value = parse_bool(value).ok_or_else(invalid)?;
-            vendor::set_bool(fd, info.id as u8, value)?;
-        }
-        ControlKind::VendorU8 => {
-            let value = value.parse::<u8>().map_err(|_| invalid())?;
-            vendor::set_u8(fd, info.id as u8, value)?;
-        }
-        ControlKind::VendorFov => {
-            let value = fov::parse_value(value).ok_or_else(invalid)?;
-            fov::set(fd, value)?;
-        }
-        ControlKind::V4l2Bool => {
-            let value = parse_bool(value).ok_or_else(invalid)?;
-            v4l2::set(fd, info.id, if value { 1 } else { 0 })?;
-        }
-        ControlKind::V4l2Int | ControlKind::V4l2Menu => {
-            let value = value.parse::<i32>().map_err(|_| invalid())?;
-            v4l2::set(fd, info.id, value)?;
-        }
-    }
-    Ok(())
-}
-
-/// Syncs the drawer widget for one control with its live device value.
-/// Failed reads leave the current widget state untouched.
-fn push_webcam_control(window: &MainWindow, info: &ControlInfo, fd: &File) {
-    let Ok(text) = read_webcam_value(fd, info) else {
-        return;
-    };
-    match info.name {
-        "fov" => {
-            let raw = fov::get(fd).unwrap_or(0);
-            let preset = fov::FOV_PRESETS
-                .iter()
-                .find(|(value, _, _)| *value == raw)
-                .map(|(_, name, _)| *name)
-                .unwrap_or("custom");
-            window.set_webcam_fov(preset.into());
-        }
-        "hdr" => window.set_webcam_hdr(parse_bool(&text) == Some(true)),
-        "horizontal_flip" => window.set_webcam_flip(parse_bool(&text) == Some(true)),
-        "vertical_screen" => window.set_webcam_vertical(parse_bool(&text) == Some(true)),
-        "anti_flicker" => window.set_webcam_anti_flicker(text != "0"),
-        "brightness" => {
-            if let Ok(value) = text.parse::<i32>() {
-                window.set_webcam_brightness(value);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Read every drawer control from the selected webcam and sync the widgets.
-fn refresh_webcam_state(window: &MainWindow, devices: &[DeviceEntry]) {
-    window.set_webcam_error("".into());
-    let index = window.get_selected_device() as usize;
-    let Some(device) = devices.get(index).filter(|d| d.is_anker_c200) else {
-        return;
-    };
-    let fd = match File::options().read(true).write(true).open(&device.id) {
-        Ok(fd) => fd,
-        Err(e) => {
-            window
-                .set_webcam_error(format!("webcam control: cannot open {}: {e}", device.id).into());
-            return;
-        }
-    };
-    for name in [
-        "fov",
-        "hdr",
-        "horizontal_flip",
-        "vertical_screen",
-        "anti_flicker",
-        "brightness",
-    ] {
-        push_webcam_control(window, webcam_control(name), &fd);
-    }
-    let brightness = webcam_control("brightness");
-    if let Ok((min, max)) = v4l2::range(&fd, brightness.id) {
-        window.set_webcam_brightness_min(min);
-        window.set_webcam_brightness_max(max);
+        webcam::push_webcam_control(&app.window, info, &fd);
     }
 }
 
@@ -679,19 +759,33 @@ fn build_segmenter(
     }
 }
 
-/// Headless preview: prefer a loopback device matching the actual source resolution,
-/// fall back to a null sink.
-fn build_sink(source_resolution: Resolution) -> Box<dyn FrameSink> {
+/// Headless preview: prefer a loopback device matching the actual source
+/// resolution, fall back to a null sink. Returns the opened node path so the
+/// UI can report exactly where frames are published.
+fn build_sink(source_resolution: Resolution) -> (Box<dyn FrameSink>, Option<PathBuf>) {
     #[cfg(feature = "v4l2")]
     {
-        if let Ok(sink) = frameiru_sink::v4l2::LoopbackSink::open("/dev/video10", source_resolution)
+        if let Some((sink, path)) = frameiru_sink::loopback::open_first_available(source_resolution)
         {
-            return Box::new(sink);
+            return (Box::new(sink), Some(path));
         }
         eprintln!("no loopback device; running headless preview only");
     }
     let _ = source_resolution;
-    Box::new(frameiru_sink::MockSink::new())
+    (Box::new(frameiru_sink::MockSink::new()), None)
+}
+
+/// Module-wide `exclusive_caps` for the running-sink badge; builds without
+/// `v4l2` never publish, so the flag is irrelevant (assume true).
+fn loopback_exclusive_caps() -> bool {
+    #[cfg(feature = "v4l2")]
+    {
+        frameiru_sink::loopback::exclusive_caps().unwrap_or(true)
+    }
+    #[cfg(not(feature = "v4l2"))]
+    {
+        true
+    }
 }
 
 /// Parses `#rrggbb` into an RGB tuple.
@@ -740,50 +834,6 @@ mod tests {
         assert_eq!(parse_hex_color("#1e88e5").unwrap(), (30, 136, 229));
         for bad in ["#fff", "#gggggg", "#ff000", ""] {
             assert!(parse_hex_color(bad).is_err(), "{bad:?} must fail");
-        }
-    }
-
-    #[test]
-    fn cleans_device_names() {
-        assert_eq!(
-            clean_device_name("Anker PowerConf C200: Anker Pow"),
-            "Anker PowerConf C200"
-        );
-        assert_eq!(
-            clean_device_name("Integrated Camera: Integrated C"),
-            "Integrated Camera"
-        );
-        assert_eq!(
-            clean_device_name("Logitech Webcam C920"),
-            "Logitech Webcam C920"
-        );
-    }
-
-    #[test]
-    fn extracts_trailing_number_correctly() {
-        assert_eq!(extract_trailing_number("/dev/video0"), Some(0));
-        assert_eq!(extract_trailing_number("/dev/video1"), Some(1));
-        assert_eq!(extract_trailing_number("/dev/video10"), Some(10));
-        assert_eq!(extract_trailing_number("(mock)"), None);
-    }
-
-    #[test]
-    fn detects_devices_contains_mock_and_valid_capture_nodes() {
-        let devices = detect_devices();
-        assert!(!devices.is_empty());
-        assert_eq!(devices[0].id, "(mock)");
-        assert!(!devices[0].is_anker_c200, "mock source is never a C200");
-        // If real camera is present in test environment, verify metadata/loopback devices are excluded
-        for dev in &devices[1..] {
-            assert!(dev.id.starts_with("/dev/video"));
-            assert_ne!(
-                dev.id, "/dev/video10",
-                "loopback output device must be excluded"
-            );
-            assert!(
-                dev.display_name.contains(&dev.id),
-                "display name must have device path hint"
-            );
         }
     }
 }

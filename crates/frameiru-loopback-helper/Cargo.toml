@@ -1,0 +1,11 @@
+[package]
+name = "frameiru-loopback-helper"
+description = "Privileged helper: load v4l2loopback for the Frameiru virtual camera"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+# std-only on purpose: runs as root via pkexec, so the smallest dependency
+# surface is the defense-in-depth story (no shell, no env interpolation).
+[dependencies]

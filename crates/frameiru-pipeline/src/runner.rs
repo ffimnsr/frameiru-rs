@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use crossbeam_channel::{Receiver, TrySendError};
 use frameiru_core::buffer::Mask;
 use frameiru_core::traits::{Compositor, FrameSink, FrameSource, Segmenter};
@@ -44,6 +44,14 @@ pub(crate) struct PipelineShared {
     /// mask slot, so a slow model never throttles the video.
     pub infer_tx: crossbeam_channel::Sender<FrameBuffer>,
     pub infer_rx: crossbeam_channel::Receiver<FrameBuffer>,
+    /// Last sink write failure, if any; cleared on the next successful write.
+    pub sink_error: ArcSwapOption<String>,
+    /// Live sink replacement: the compose worker swaps its `Box<dyn FrameSink>`
+    /// whenever a new one arrives (e.g. hot-attaching a loopback device that
+    /// appeared while the engine ran on a mock sink). Dropping the previous
+    /// sink happens on the compose thread, which is the only writer.
+    pub sink_tx: crossbeam_channel::Sender<Box<dyn FrameSink>>,
+    pub sink_rx: crossbeam_channel::Receiver<Box<dyn FrameSink>>,
 }
 
 /// Spawns the capture worker. Frames that do not fit the channel are dropped
@@ -184,6 +192,13 @@ pub(crate) fn spawn_compose(
             let mut last_bg: Option<BackgroundMode> = None;
             let mut bg_dirty = true;
             while !shared.stop.load(Ordering::Relaxed) {
+                // Apply any pending sink swaps before this frame: the old sink
+                // is dropped here (compose thread owns it exclusively), then
+                // every subsequent frame goes to the new one.
+                while let Ok(new_sink) = shared.sink_rx.try_recv() {
+                    sink = new_sink;
+                }
+
                 let frame = match input_rx.recv_timeout(STOP_POLL) {
                     Ok(frame) => frame,
                     Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
@@ -263,6 +278,10 @@ pub(crate) fn spawn_compose(
                 let _ = shared.preview_tx.send(Arc::new(out.clone()));
                 if let Err(e) = sink.write_frame(out) {
                     tracing::warn!("sink error: {e}");
+                    shared.sink_error.store(Some(Arc::new(format!("{e:#}"))));
+                } else if shared.sink_error.load().is_some() {
+                    // Recovery: the sink accepted a frame again.
+                    shared.sink_error.store(None);
                 }
                 shared
                     .last_resolution

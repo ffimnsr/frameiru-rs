@@ -1796,6 +1796,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "frameiru-loopback-helper"
+version = "0.1.0"
+
+[[package]]
 name = "frameiru-pipeline"
 version = "0.1.0"
 dependencies = [
@@ -1828,6 +1832,7 @@ version = "0.1.0"
 dependencies = [
  "frameiru-capture",
  "frameiru-core",
+ "nix",
  "ouroboros",
  "thiserror 2.0.21",
  "tokio",

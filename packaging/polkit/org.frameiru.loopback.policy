@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
+<policyconfig>
+  <vendor>Frameiru</vendor>
+  <vendor_url>https://github.com/ffimnsr/frameiru</vendor_url>
+
+  <!--
+    Enables the "Enable virtual camera" button in frameiru-ui: pkexec runs
+    /usr/libexec/frameiru-loopback-helper with the single fixed argument
+    "loopback-load" (the argv1 annotation restricts the action to exactly
+    that invocation, and the helper itself re-validates the argument list).
+
+    Install:  /usr/share/polkit-1/actions/org.frameiru.loopback.policy
+  -->
+  <action id="org.frameiru.loopback.load">
+    <description>Load the Frameiru virtual camera kernel module</description>
+    <description xml:lang="de">Frameiru Virtualkamera-Kernmodul laden</description>
+    <message>Authentication is required to load the v4l2loopback kernel module that Frameiru uses as a virtual webcam.</message>
+    <message xml:lang="de">Authentifizierung erforderlich, um das v4l2loopback-Kernmodul zu laden, das Frameiru als virtuelle Webcam verwendet.</message>
+    <icon_name>camera-video</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/frameiru-loopback-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">loopback-load</annotate>
+  </action>
+</policyconfig>

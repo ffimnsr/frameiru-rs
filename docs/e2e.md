@@ -10,6 +10,8 @@ skip cleanly when the hardware is absent.
 ```sh
 # Virtual camera device (/dev/video10). exclusive_caps makes it show up as
 # a camera (not a capture device) for consumers.
+# One-time boot-persistent option:
+#   sudo frameiru-cli setup          (undo: sudo frameiru-cli setup --remove)
 sudo modprobe v4l2loopback exclusive_caps=1 card_label="Frameiru"
 # A physical camera at /dev/video0.
 ```

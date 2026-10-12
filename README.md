@@ -87,6 +87,35 @@ sudo modprobe v4l2loopback exclusive_caps=1 card_label="Frameiru"
 `exclusive_caps=1` makes the device show up as a camera (not a capture device) for
 consumers; start the pipeline before opening the camera in the consuming app.
 
+**Do it once, forever** — make the module auto-load at every boot instead of
+loading it per session:
+
+```sh
+sudo frameiru-cli setup
+# later, to undo: sudo frameiru-cli setup --remove
+```
+
+This writes `/etc/modprobe.d/frameiru.conf` (the `exclusive_caps`/`card_label`/`video_nr`
+options) and `/etc/modules-load.d/frameiru.conf` (the module name), checks for conflicting
+`v4l2loopback` configs, and tells you whether the current session already has the right
+module state.
+
+**Or let the GUI do this session's load.** `frameiru-ui` probes the loopback sink on
+startup and shows its real state in a banner (module missing, busy, permission denied,
+non-exclusive mode, or ready on `/dev/videoN`). With the polkit helper installed, the
+banner's **LOAD VIRTUAL CAMERA** button runs the module load through `pkexec` — no
+terminal, no `sudo` typing. See [`packaging/README.md`](packaging/README.md) for the
+(one-time) install, or run `frameiru-loopback-helper loopback-load` under `sudo` yourself.
+
+The GUI also **heals itself**: while the engine runs on a mock sink it watches for the
+loopback device (1s poll) and hot-attaches it the moment it appears — load the module
+while it runs, or close the app that held the device, and the pill flips to the live
+`/dev/videoN` without a restart.
+
+**Not sure what's wrong?** `frameiru-cli doctor` preflights the whole stack (module,
+`exclusive_caps`, loopback node, `video` group, ffmpeg, boot config) and prints an exact
+fix per failure; `--fix` attempts the privileged module step through `pkexec`.
+
 ### 3. Run the pipeline
 
 ```sh
@@ -235,10 +264,11 @@ Trait boundaries live in `frameiru-core` ([`FrameSource`], [`Segmenter`], [`Comp
 | `frameiru-capture`      | Frame sources: V4L2 device streaming, synthetic mock source, YUYV/MJPEG decoding.        |
 | `frameiru-segment`      | ONNX segmentation: letterboxing, model runner, fusion segmenter, guided-filter refinement, mask polish, temporal smoother, ROI tracking. |
 | `frameiru-compose`      | Compositing: rayon CPU blender, wgpu GPU blender, looping video backgrounds.             |
-| `frameiru-sink`         | Outputs: v4l2loopback writer, preview broadcast, mock sink, RGB→YUYV conversion.         |
+| `frameiru-sink`         | Outputs: v4l2loopback writer + health probe, preview broadcast, mock sink, RGB→YUYV conversion. |
+| `frameiru-loopback-helper` | Privileged std-only helper: `pkexec`-friendly `v4l2loopback` loader (`loopback-load`). |
 | `frameiru-ipc`          | Control plane: Unix-socket JSON server/client and optional D-Bus service.                |
 | `frameiru-pipeline`     | Engine: worker threads, pacing, motion gating, metrics, preview tap, clean shutdown.     |
-| `frameiru-cli`          | `frameiru-cli` binary: run/start/stop/status/set-bg/devices/inspect/benchmark.           |
+| `frameiru-cli`          | `frameiru-cli` binary: run/start/stop/status/set-bg/devices/inspect/benchmark/doctor/setup. |
 | `frameiru-ui`           | `frameiru-ui` binary: Slint desktop GUI.                                                 |
 | `frameiru-webcam-utils` | `frameiru-webcam-utils` binary: Anker PowerConf C200 vendor UVC controls (see [its README](crates/frameiru-webcam-utils/README.md)). |
 
@@ -307,9 +337,14 @@ cargo clippy --workspace --all-targets --all-features
 
 ## Troubleshooting
 
-- **`/dev/video10` does not exist** — load the module:
+- **`/dev/video10` does not exist** — the GUI banner says so and offers a LOAD button
+  (with the polkit helper) or a copyable command; `sudo frameiru-cli setup` makes the
+  module auto-load at every boot (`--remove` undoes it). Manually:
   `sudo modprobe v4l2loopback exclusive_caps=1 card_label="Frameiru"`. Confirm with
   `v4l2-ctl --list-devices`.
+- **Sink banner says BUSY** — another producer (OBS, a second Frameiru) holds
+  `/dev/videoN`; close it and hit the banner's RETRY.
+- **Sink banner says DENIED** — add your user to the `video` group and re-login.
 - **The consuming app doesn't list Frameiru as a camera** — `exclusive_caps=1` is
   required for camera (not capture) semantics; start the pipeline first, then open the
   app's camera picker.
@@ -330,12 +365,9 @@ vendor-only controls (FOV preset, HDR, flips, anti-flicker). See
 
 ## Documentation
 
-- [HL.md](HL.md) — high-level architecture sketch.
-- [PLAN.md](PLAN.md) — implementation plan and technical specification.
 - [docs/e2e.md](docs/e2e.md) — hardware end-to-end verification procedure.
 - [docs/research/Real-Time Background Blur Optimization.md](docs/research/Real-Time%20Background%20Blur%20Optimization.md)
   — design research on matting models and pipeline optimization.
-- [AGENTS.md](AGENTS.md) — coding and review standards for this repository.
 
 ## License
 

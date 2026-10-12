@@ -3,7 +3,9 @@
 pub mod bench;
 pub mod control;
 pub mod devices;
+pub mod doctor;
 pub mod run;
+pub mod setup;
 
 pub use bench::BenchArgs;
 
@@ -16,16 +18,45 @@ use frameiru_core::BackgroundMode;
 
 /// Default control socket: `$XDG_RUNTIME_DIR/frameiru.sock`, falling back to
 /// `/tmp/frameiru-<uid>.sock`.
+///
+/// The uid is read from `/proc/self/status`, so the path is stable across
+/// processes of the same user. A pid-derived path would never match between
+/// the daemon and later `stop`/`status`/`set-bg` invocations (each process
+/// has its own pid), which is why the fallback must NOT use the pid.
 pub fn default_socket() -> PathBuf {
     if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
         if !dir.is_empty() {
             return PathBuf::from(dir).join("frameiru.sock");
         }
     }
-    // Cheap uid approximation without a libc dependency: the top 16 bits of
-    // the pid correlate with the uid on typical Linux setups only loosely,
-    // so prefer the pid itself for uniqueness instead.
-    PathBuf::from(format!("/tmp/frameiru-{}.sock", std::process::id()))
+    PathBuf::from(format!("/tmp/frameiru-{}.sock", current_uid().unwrap_or(0)))
+}
+
+/// First real uid from `/proc/self/status` (no libc dependency).
+fn current_uid() -> Option<u32> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    parse_uid_line(status.lines().find(|l| l.starts_with("Uid:"))?)
+}
+
+fn parse_uid_line(line: &str) -> Option<u32> {
+    line.split_whitespace().nth(1)?.parse().ok()
+}
+
+/// Arguments for the one-time boot setup of the virtual camera module.
+#[derive(Debug, Clone, Args)]
+pub struct SetupArgs {
+    /// Undo: remove the boot configuration written by `setup`.
+    #[arg(long)]
+    pub remove: bool,
+}
+
+/// Arguments for the preflight check command.
+#[derive(Debug, Clone, Args)]
+pub struct DoctorArgs {
+    /// Attempt the privileged module fix (via pkexec, when the helper is
+    /// installed) before printing the report.
+    #[arg(long)]
+    pub fix: bool,
 }
 
 /// Arguments shared by `run` and `start`.
@@ -295,6 +326,28 @@ pub fn parse_background(s: &str) -> anyhow::Result<BackgroundMode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_uid_from_proc_status_line() {
+        assert_eq!(parse_uid_line("Uid:\t1000\t1000\t1000\t1000"), Some(1000));
+        assert_eq!(parse_uid_line("Uid: 0 0 0 0"), Some(0));
+        assert_eq!(
+            parse_uid_line("Uid:\t65534\t65534\t65534\t65534"),
+            Some(65534)
+        );
+        assert_eq!(parse_uid_line("Uid:\tnot-a-number"), None);
+        assert_eq!(parse_uid_line(""), None);
+    }
+
+    #[test]
+    fn uid_fallback_reads_a_stable_uid() {
+        // The pid-free fallback must resolve to a real, stable uid here;
+        // that is what keeps `stop`/`status` able to find the daemon's
+        // socket without an explicit `--socket`.
+        let uid = current_uid().expect("/proc/self/status has a Uid line");
+        assert_eq!(current_uid(), Some(uid), "uid must be stable across reads");
+        assert!(format!("/tmp/frameiru-{uid}.sock").starts_with("/tmp/frameiru-"));
+    }
 
     #[test]
     fn parses_mask_alpha() {

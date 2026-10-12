@@ -11,6 +11,7 @@ members = [
     "crates/frameiru-webcam-utils",
     "crates/frameiru-cli",
     "crates/frameiru-ui",
+    "crates/frameiru-loopback-helper",
 ]
 
 [workspace.package]

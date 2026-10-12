@@ -892,7 +892,10 @@ mod tests {
         // Odd rows get the extra scanline darkening on top of the vignette.
         let bright_row = out.data[(16 * 32 + 16) * 3];
         let scan_row = out.data[(18 * 32 + 16) * 3];
-        assert!(scan_row < bright_row, "scanline row darker than bright row at same column");
+        assert!(
+            scan_row < bright_row,
+            "scanline row darker than bright row at same column"
+        );
     }
 
     /// Writes a solid-color PNG to a temp file and returns its path.

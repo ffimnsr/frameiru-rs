@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use crossbeam_channel::bounded;
 use frameiru_core::buffer::Mask;
 use frameiru_core::error::FrameiruError;
@@ -45,6 +45,7 @@ impl Engine {
         let (infer_tx, infer_rx) = bounded::<FrameBuffer>(config.channel_capacity.max(4));
         let (mode_tx, mode_rx) = bounded::<BackgroundMode>(1);
         let (overlay_tx, overlay_rx) = bounded::<OverlayMode>(1);
+        let (sink_tx, sink_rx) = bounded::<Box<dyn FrameSink>>(1);
         let (preview_tx, _) = broadcast::channel::<Arc<FrameBuffer>>(config.preview_capacity);
         let stop = Arc::new(AtomicBool::new(false));
 
@@ -65,6 +66,9 @@ impl Engine {
             capture_rx,
             infer_tx,
             infer_rx,
+            sink_error: ArcSwapOption::empty(),
+            sink_tx,
+            sink_rx,
         });
 
         let handle = PipelineHandle {
@@ -155,6 +159,18 @@ impl PipelineHandle {
             .map_err(|_| FrameiruError::Internal("pipeline is shutting down".into()))
     }
 
+    /// Replaces the sink at runtime: the compose worker drops the previous
+    /// sink and writes every subsequent frame to the new one. Used to
+    /// hot-attach a loopback device that appeared while the engine ran on a
+    /// mock sink, without restarting the pipeline.
+    pub fn swap_sink(&self, sink: Box<dyn FrameSink>) -> Result<(), FrameiruError> {
+        self.inner
+            .shared
+            .sink_tx
+            .send(sink)
+            .map_err(|_| FrameiruError::Internal("pipeline is shutting down".into()))
+    }
+
     /// Current runtime counters.
     pub fn metrics(&self) -> MetricsSnapshot {
         self.inner.shared.metrics.snapshot()
@@ -174,6 +190,15 @@ impl PipelineHandle {
     pub fn last_resolution(&self) -> Option<Resolution> {
         let res = **self.inner.shared.last_resolution.load();
         res.is_valid().then_some(res)
+    }
+
+    /// Last sink write failure, cleared once the sink accepts a frame again.
+    pub fn sink_error(&self) -> Option<String> {
+        self.inner
+            .shared
+            .sink_error
+            .load_full()
+            .map(|err| (*err).clone())
     }
 
     /// Signals all workers to stop and joins their threads. Idempotent.

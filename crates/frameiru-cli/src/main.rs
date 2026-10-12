@@ -36,6 +36,12 @@ enum Command {
     Inspect(commands::DeviceArg),
     /// Run an inference/composition benchmark without a video sink.
     Benchmark(commands::BenchArgs),
+    /// One-time boot setup: auto-load the virtual camera module at every
+    /// boot (writes /etc/modprobe.d + /etc/modules-load.d; needs root).
+    Setup(commands::SetupArgs),
+    /// Preflight-check the virtual camera stack (module, nodes, groups,
+    /// tools) and print exact fixes.
+    Doctor(commands::DoctorArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -55,5 +61,17 @@ fn main() -> anyhow::Result<()> {
         Command::Devices => commands::devices::list_devices(),
         Command::Inspect(args) => commands::devices::inspect(args.device),
         Command::Benchmark(args) => commands::bench::benchmark(args),
+        Command::Setup(args) => {
+            let boot = commands::setup::BootConfig::default();
+            if args.remove {
+                commands::setup::remove(&boot)
+            } else {
+                commands::setup::install(&boot)
+            }
+        }
+        Command::Doctor(args) => {
+            let code = commands::doctor::run(args.fix)?;
+            std::process::exit(code);
+        }
     }
 }

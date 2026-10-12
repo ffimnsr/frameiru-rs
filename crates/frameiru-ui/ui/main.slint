@@ -389,6 +389,16 @@ export component MainWindow inherits Window {
     in-out property <int> webcam_brightness_min: 0;
     in-out property <int> webcam_brightness_max: 255;
     in-out property <string> webcam_error: "";
+    // Virtual camera (v4l2loopback sink) status — set by the app probe.
+    in-out property <string> sink_pill: "OFF";
+    in-out property <bool> sink_ok: false;
+    in-out property <bool> sink_warn: false;
+    in-out property <string> sink_message: "";
+    in-out property <bool> sink_action_visible: false;
+    in-out property <string> sink_action_text: "LOAD VIRTUAL CAMERA";
+    in-out property <bool> sink_action_busy: false;
+    // Runtime sink fault (write failures while the engine runs).
+    in-out property <string> sink_runtime_error: "";
 
     callback start_pipeline();
     callback stop_pipeline();
@@ -405,6 +415,7 @@ export component MainWindow inherits Window {
     callback webcam_set_vertical(bool);
     callback webcam_set_anti_flicker(bool);
     callback webcam_set_brightness(int);
+    callback enable_virtual_camera();
 
     // Chassis Container
     Rectangle {
@@ -566,11 +577,52 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                // Corner Reticles (Top-Left, Top-Right, Bottom-Left, Bottom-Right)
+                // Corner Reticles (Top-Left, Top-Right; bottom ones hide when
+                // the virtual-camera banner claims the corner).
                 ReticleCorner { x: 12px; y: 12px; is_top: true; is_left: true; }
                 ReticleCorner { x: parent.width - 26px; y: 12px; is_top: true; is_left: false; }
-                ReticleCorner { x: 12px; y: parent.height - 26px; is_top: false; is_left: true; }
-                ReticleCorner { x: parent.width - 26px; y: parent.height - 26px; is_top: false; is_left: false; }
+                if !(root.sink_runtime_error != "" || root.sink_message != ""): ReticleCorner { x: 12px; y: parent.height - 26px; is_top: false; is_left: true; }
+                if !(root.sink_runtime_error != "" || root.sink_message != ""): ReticleCorner { x: parent.width - 26px; y: parent.height - 26px; is_top: false; is_left: false; }
+
+                // Virtual camera (sink) status banner, bottom-left.
+                if root.sink_runtime_error != "" || root.sink_message != "": Rectangle {
+                    x: 16px;
+                    y: parent.height - 66px;
+                    width: parent.width - 32px;
+                    height: 50px;
+                    background: #160f16f0;
+                    border-color: root.sink_runtime_error != "" ? #ff0055 :
+                                  root.sink_warn ? #ffb703 : #ff0055;
+                    border-width: 1px;
+                    border-radius: 5px;
+
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        spacing: 10px;
+                        alignment: space-between;
+
+                        Text {
+                            text: root.sink_runtime_error != ""
+                                  ? "SINK FAULT: " + root.sink_runtime_error
+                                  : root.sink_message;
+                            font-size: 10px;
+                            color: root.sink_runtime_error != "" ? #ff0055 :
+                                   root.sink_warn ? #ffb703 : #f87171;
+                            wrap: word-wrap;
+                            horizontal-stretch: 1;
+                            vertical-alignment: center;
+                        }
+
+                        if root.sink_action_visible: CyberButton {
+                            text: root.sink_action_text;
+                            is_primary: true;
+                            btn_min_width: 182px;
+                            btn_enabled: !root.sink_action_busy;
+                            clicked => { root.enable_virtual_camera(); }
+                        }
+                    }
+                }
 
                 // Top HUD Overlay Telemetry
                 Rectangle {
@@ -608,6 +660,42 @@ export component MainWindow inherits Window {
                                     font-size: 10px;
                                     font-weight: 700;
                                     color: root.is_running ? #f8fafc : #64748b;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        // Virtual camera (sink) status pill
+                        Rectangle {
+                            background: #07080ae0;
+                            border-color: root.sink_runtime_error != "" ? #ff0055 :
+                                          root.sink_ok ? #00f0ff50 :
+                                          root.sink_warn ? #ffb70380 : #1f2533;
+                            border-width: 1px;
+                            border-radius: 4px;
+                            height: 26px;
+
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-right: 8px;
+                                spacing: 6px;
+
+                                Rectangle {
+                                    width: 6px;
+                                    height: 6px;
+                                    border-radius: 3px;
+                                    background: root.sink_runtime_error != "" ? #ff0055 :
+                                                 root.sink_ok ? #00ff88 :
+                                                 root.sink_warn ? #ffb703 : #475569;
+                                    y: (parent.height - self.height) / 2;
+                                }
+                                Text {
+                                    text: root.sink_runtime_error != "" ? "SINK: ERROR" : "SINK: " + root.sink_pill;
+                                    font-size: 10px;
+                                    font-weight: 700;
+                                    color: root.sink_runtime_error != "" ? #ff0055 :
+                                           root.sink_ok ? #f8fafc :
+                                           root.sink_warn ? #ffb703 : #64748b;
                                     vertical-alignment: center;
                                 }
                             }

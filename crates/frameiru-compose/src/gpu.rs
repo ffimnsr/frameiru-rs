@@ -878,7 +878,10 @@ mod tests {
         let src_pass = frame(res(8, 4), 200);
         let m_pass = mask(res(8, 4), 0.0);
         gpu.composite(&src_pass, &m_pass, &mut out).unwrap();
-        assert_eq!(out.data[0], 200, "bright row untouched in passthrough scanlines");
+        assert_eq!(
+            out.data[0], 200,
+            "bright row untouched in passthrough scanlines"
+        );
         assert!(
             out.data[2 * 8 * 3] < out.data[0],
             "scanline row must be darker in passthrough scanlines, got {} vs {}",

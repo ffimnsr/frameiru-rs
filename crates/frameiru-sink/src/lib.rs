@@ -11,8 +11,13 @@ pub mod convert;
 pub mod mock;
 
 #[cfg(feature = "v4l2")]
+pub mod loopback;
+#[cfg(feature = "v4l2")]
 pub mod v4l2;
 
 pub use broadcast::BroadcastSink;
 pub use convert::rgb8_to_yuyv422;
 pub use mock::MockSink;
+
+#[cfg(feature = "v4l2")]
+pub use loopback::{open_first_available, probe, LoopbackStatus};

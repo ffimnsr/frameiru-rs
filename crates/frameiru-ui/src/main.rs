@@ -1,6 +1,9 @@
 //! Frameiru GUI launcher.
 
 mod app;
+mod devices;
+mod virtual_camera;
+mod webcam;
 
 use std::path::PathBuf;
 
