@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.vastorigins.frameiru</id>
+  <name>Frameiru</name>
+  <summary>Virtual webcam with background blur and replacement</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT OR Apache-2.0</project_license>
+
+  <description>
+    <p>
+      Frameiru turns your camera into a virtual webcam with background blur,
+      replacement, and stylized overlays. It reads a physical camera, computes a
+      foreground mask with an embedded neural matting model, composites the new
+      background, and publishes the result to a v4l2loopback device that Zoom,
+      Google Meet, Teams, Discord, or any other video app selects as a regular
+      webcam.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Backgrounds: passthrough, blur, solid color, image, or looping video, switchable while streaming</li>
+      <li>Zero-setup segmentation: the matting model ships inside the app, no model download</li>
+      <li>GPU compositing with automatic CPU fallback, plus live preview and metrics</li>
+      <li>Overlay effects: scanlines, light leak, CRT, chromatic aberration, VHS tracking, dithering, halftone, grayscale</li>
+      <li>Webcam controls (brightness, contrast, vendor UVC controls) for supported devices</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">com.vastorigins.frameiru.desktop</launchable>
+  <developer id="com.vastorigins">
+    <name>Vast Origins</name>
+  </developer>
+  <url type="homepage">https://github.com/ffimnsr/frameiru-rs</url>
+  <url type="bugtracker">https://github.com/ffimnsr/frameiru-rs/issues</url>
+  <categories>
+    <category>AudioVideo</category>
+    <category>Video</category>
+    <category>Graphics</category>
+  </categories>
+  <keywords>
+    <keyword>webcam</keyword>
+    <keyword>virtual camera</keyword>
+    <keyword>background blur</keyword>
+    <keyword>green screen</keyword>
+    <keyword>segmentation</keyword>
+  </keywords>
+  <content_rating type="oars-1.1"/>
+  <provides>
+    <binary>frameiru-ui</binary>
+  </provides>
+  <releases>
+    <release version="0.1.0" date="2026-10-12"/>
+  </releases>
+</component>

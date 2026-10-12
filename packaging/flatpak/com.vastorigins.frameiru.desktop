@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Frameiru
+GenericName=Virtual Webcam
+Comment=Virtual webcam with background blur and replacement
+Exec=frameiru-ui
+Icon=com.vastorigins.frameiru
+Terminal=false
+Categories=AudioVideo;Video;
+Keywords=webcam;camera;virtual camera;background blur;green screen;
+StartupNotify=true

@@ -1,0 +1,82 @@
+# Flatpak manifest for Frameiru (app id `com.vastorigins.frameiru`).
+#
+# Build and install for the current user:
+#
+#   flatpak-builder --user --install --force-clean \
+#     --state-dir=.flatpak-builder build-dir \
+#     packaging/flatpak/com.vastorigins.frameiru.yml
+#
+# Relative paths (including `cargo-sources.json` below) resolve against this
+# file's directory. `packaging/README.md` documents the host-side requirements,
+# how to regenerate `cargo-sources.json`, and how to bump ONNX Runtime.
+id: com.vastorigins.frameiru
+runtime: org.freedesktop.Platform
+runtime-version: "26.08"
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: frameiru-ui
+
+finish-args:
+  # GUI (Slint): Wayland with an X11 fallback, plus the GPU nodes the wgpu
+  # compositor and the femtovg renderer need.
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=dri
+  # Camera capture (/dev/video*) and the v4l2loopback output node. The kernel
+  # module itself has to be loaded on the host: a sandboxed app can neither
+  # modprobe nor authenticate through pkexec (see packaging/README.md).
+  - --device=all
+  # KWin PiP watcher: talk to the KWin scripting service, own the app's own
+  # bus name.
+  - --talk-name=org.kde.KWin
+  - --own-name=org.frameiru.Pip
+  # The `ort` crate loads onnxruntime with dlopen (feature `onnx-dynamic`);
+  # point it at the library bundled by the `onnxruntime` module below.
+  - --env=ORT_DYLIB_PATH=/app/lib/libonnxruntime.so
+
+modules:
+  # ONNX Runtime, loaded at runtime by the UI and CLI (`onnx-dynamic` feature).
+  # Same upstream release `ort` 2.0.0-rc.13 would download itself (API 27+
+  # bindings), so the runtime is ABI-compatible with the compiled crate.
+  - name: onnxruntime
+    buildsystem: simple
+    build-commands:
+      - mkdir -p /app/lib
+      - cp -a ort/lib/libonnxruntime.so* ort/lib/libonnxruntime_providers_shared.so /app/lib/
+    sources:
+      - type: archive
+        only-arches: [x86_64]
+        url: https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-linux-x64-1.28.0.tgz
+        sha256: a3e1b79d7bb1bf09696ce675f49e4064e6c81f6202b8225624fff0e93f8d6407
+      - type: archive
+        only-arches: [aarch64]
+        url: https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-linux-aarch64-1.28.0.tgz
+        sha256: e15ff8b5d85afe6c144d97c6fd432254bf76a219daaf17658087d6ecb3e8f0bb
+
+  - name: frameiru
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      env:
+        CARGO_HOME: /run/build/frameiru/cargo
+    build-commands:
+      # `onnx-dynamic` loads onnxruntime at runtime (bundled above) instead of
+      # downloading it during the build: build sandboxes have no network.
+      # `--offline` builds against the vendored crates from cargo-sources.json.
+      - cargo build --release --offline -p frameiru-ui --no-default-features --features gpu,v4l2,onnx-dynamic
+      - cargo build --release --offline -p frameiru-cli --no-default-features --features gpu,v4l2,dbus,onnx-dynamic
+      - install -Dm755 target/release/frameiru-ui /app/bin/frameiru-ui
+      - install -Dm755 target/release/frameiru-cli /app/bin/frameiru-cli
+      - install -Dm644 packaging/flatpak/com.vastorigins.frameiru.desktop /app/share/applications/com.vastorigins.frameiru.desktop
+      - install -Dm644 packaging/flatpak/com.vastorigins.frameiru.metainfo.xml /app/share/metainfo/com.vastorigins.frameiru.metainfo.xml
+      - install -Dm644 packaging/flatpak/icons/com.vastorigins.frameiru-128.png /app/share/icons/hicolor/128x128/apps/com.vastorigins.frameiru.png
+      - install -Dm644 packaging/flatpak/icons/com.vastorigins.frameiru-256.png /app/share/icons/hicolor/256x256/apps/com.vastorigins.frameiru.png
+    sources:
+      # Flathub builds from public sources: for releases pin a `tag` (with the
+      # matching `commit`) instead of tracking the default branch.
+      - type: git
+        url: https://github.com/ffimnsr/frameiru-rs.git
+        branch: master
+      - cargo-sources.json

@@ -13,9 +13,18 @@ default = []
 # postprocessing, and the temporal smoother are always available and fully
 # tested without it.
 onnx = ["dep:ort"]
+# Same ONNX inference, but onnxruntime is loaded at runtime (from
+# `ORT_DYLIB_PATH`, else the system loader path) instead of being downloaded
+# and linked during the build. Sandboxed builds (Flatpak) need this: their
+# build sandbox has no network. Implies `onnx`; `ort`'s `load-dynamic` makes
+# `ort-sys` skip the download, so the build needs no network at all.
+onnx-dynamic = ["onnx", "ort/load-dynamic"]
 
 [dependencies]
 frameiru-core = { workspace = true }
+# `download-binaries` is part of `ort`'s default features anyway; it stays
+# listed here so the linked-build setup is explicit. `onnx-dynamic` adds
+# `load-dynamic` on top, which wins over the downloader (see `ort-sys`).
 ort = { version = "2.0.0-rc.13", optional = true, features = ["download-binaries"] }
 tracing.workspace = true
 # SIMD-accelerated bilinear resize for letterbox preprocessing.

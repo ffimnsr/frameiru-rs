@@ -15,6 +15,10 @@ gpu = ["frameiru-compose/gpu"]
 v4l2 = ["frameiru-capture/v4l2", "frameiru-sink/v4l2"]
 # ONNX background segmentation (model path passed on the command line).
 onnx = ["frameiru-segment/onnx"]
+# Same, but with onnxruntime loaded at runtime from a bundled library
+# (`ORT_DYLIB_PATH`) instead of downloaded at build time. Used by the Flatpak
+# build, whose sandbox has no network; implies `onnx`.
+onnx-dynamic = ["onnx", "frameiru-segment/onnx-dynamic"]
 
 [dependencies]
 frameiru-core = { workspace = true, features = ["slint"] }

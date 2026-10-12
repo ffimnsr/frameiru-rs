@@ -15,3 +15,13 @@ tasks:
       - cargo build --release -p frameiru-ui
       - install -Dm755 target/release/frameiru-cli "$HOME/.local/bin/frameiru-cli"
       - install -Dm755 target/release/frameiru-ui "$HOME/.local/bin/frameiru-ui"
+
+  flatpak-build:
+    description: Build and install the Flatpak (com.vastorigins.frameiru) for the current user
+    commands:
+      - flatpak-builder --user --install --force-clean --state-dir=.flatpak-builder build-dir packaging/flatpak/com.vastorigins.frameiru.yml
+
+  flatpak-run:
+    description: Run the installed Frameiru Flatpak
+    commands:
+      - flatpak run com.vastorigins.frameiru

@@ -261,6 +261,11 @@ pipeline, shows a live preview, and provides runtime controls:
 Without a loopback device the GUI falls back to headless preview; without `--model` it
 uses the embedded fusion model.
 
+Sandboxed installs: `packaging/flatpak/com.vastorigins.frameiru.yml` builds the GUI
+(and `frameiru-cli`) as the Flatpak `com.vastorigins.frameiru` — see
+[packaging/README.md](packaging/README.md) for the build command and the host-side
+`v4l2loopback` requirement.
+
 ## Library use
 
 The engine is headless-friendly and embeds in any Rust application:

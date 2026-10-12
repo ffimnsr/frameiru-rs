@@ -12,6 +12,10 @@ default = []
 full = ["gpu", "onnx", "v4l2", "dbus"]
 gpu = ["frameiru-compose/gpu"]
 onnx = ["frameiru-segment/onnx"]
+# Same, but with onnxruntime loaded at runtime from a bundled library
+# (`ORT_DYLIB_PATH`) instead of downloaded at build time. Used by the Flatpak
+# build, whose sandbox has no network; implies `onnx`.
+onnx-dynamic = ["onnx", "frameiru-segment/onnx-dynamic"]
 v4l2 = ["frameiru-capture/v4l2", "frameiru-sink/v4l2"]
 dbus = ["frameiru-ipc/dbus"]
 

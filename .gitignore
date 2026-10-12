@@ -3,3 +3,9 @@
 /*.md
 !/README.md
 /.ee.toml
+
+# Flatpak packaging (see packaging/README.md)
+/.flatpak-builder/
+/build-dir/
+/.cargo-gen/
+flatpak-cargo-generator.py
