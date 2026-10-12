@@ -4,7 +4,7 @@
 
 use std::cell::RefCell;
 use std::fs::File;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -614,8 +614,8 @@ impl App {
     fn applied_sink_state(app: &App) -> SinkState {
         match &app.sink_path {
             Some(path) => SinkState::Ready {
+                exclusive: loopback_exclusive_caps(path),
                 path: path.clone(),
-                exclusive: loopback_exclusive_caps(),
             },
             None => app.sink_state.clone(),
         }
@@ -647,8 +647,8 @@ impl App {
                 a.sink_watcher = None;
                 a.sink_path = Some(path.clone());
                 a.sink_state = SinkState::Ready {
+                    exclusive: loopback_exclusive_caps(&path),
                     path,
-                    exclusive: loopback_exclusive_caps(),
                 };
                 virtual_camera::apply(&a.window, &virtual_camera::view_for(&a.sink_state, ""));
             }
@@ -837,15 +837,17 @@ fn build_sink(source_resolution: Resolution) -> (Box<dyn FrameSink>, Option<Path
     (Box::new(frameiru_sink::MockSink::new()), None)
 }
 
-/// Module-wide `exclusive_caps` for the running-sink badge; builds without
-/// `v4l2` never publish, so the flag is irrelevant (assume true).
-fn loopback_exclusive_caps() -> bool {
+/// Per-device `exclusive_caps` for the running-sink badge. Unreadable caps
+/// fall back to true (no nagging); builds without `v4l2` never publish, so
+/// the flag is irrelevant there.
+fn loopback_exclusive_caps(path: &Path) -> bool {
     #[cfg(feature = "v4l2")]
     {
-        frameiru_sink::loopback::exclusive_caps().unwrap_or(true)
+        frameiru_sink::loopback::path_exclusive_caps(path).unwrap_or(true)
     }
     #[cfg(not(feature = "v4l2"))]
     {
+        let _ = path;
         true
     }
 }

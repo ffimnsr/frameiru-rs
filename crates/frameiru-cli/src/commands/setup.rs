@@ -18,8 +18,16 @@ use anyhow::{bail, Context as _, Result};
 pub(crate) const MODULE_NAME: &str = "v4l2loopback";
 /// sysfs dir that exists while the module is loaded.
 pub(crate) const SYSFS_MODULE: &str = "/sys/module/v4l2loopback";
-/// sysfs bool-array parameter read when the module is loaded.
-pub(crate) const SYSFS_EXCLUSIVE_CAPS: &str = "/sys/module/v4l2loopback/parameters/exclusive_caps";
+/// Card label the load options below assign to the virtual camera (kept in
+/// sync with them by `load_options_match_the_exported_constants`).
+pub(crate) const CARD_LABEL: &str = "Frameiru";
+/// Video node number the load options below assign to the virtual camera.
+pub(crate) const VIDEO_NR: u32 = 10;
+
+/// sysfs array parameter: video number of each created loopback device.
+const SYSFS_VIDEO_NR: &str = "/sys/module/v4l2loopback/parameters/video_nr";
+/// sysfs array parameter: exclusive-caps flag of each created device.
+const SYSFS_EXCLUSIVE_CAPS: &str = "/sys/module/v4l2loopback/parameters/exclusive_caps";
 
 const MODPROBE_PATH: &str = "/etc/modprobe.d/frameiru.conf";
 const MODULES_LOAD_PATH: &str = "/etc/modules-load.d/frameiru.conf";
@@ -117,24 +125,50 @@ pub fn scan_modprobe_conflicts(dir: &Path, own: &Path) -> Vec<String> {
     warnings
 }
 
-/// True when every device in the module bool-array is exclusive (`Y`/`1`);
-/// any unknown/missing token counts as non-exclusive (fail closed: the goal
-/// is guaranteeing exclusive_caps, so garbage must never read as "fine").
-/// `None` is never returned by this parser; it exists so callers can
-/// distinguish "file unreadable" from "explicitly false".
-pub(crate) fn parse_exclusive_caps(content: &str) -> Option<bool> {
-    let mut seen = false;
-    for token in content.split(',').map(str::trim).filter(|t| !t.is_empty()) {
-        if !matches!(token, "Y" | "y" | "1" | "true" | "on") {
-            return Some(false);
-        }
-        seen = true;
-    }
-    Some(seen)
+/// `exclusive_caps` flag of the loopback device publishing on `/dev/video{nr}`,
+/// matched through the module's parameter arrays.
+///
+/// Both sysfs files are fixed `MAX_DEVICES`-long kernel arrays: entry `i`
+/// describes the device created at index `i`, and `video_nr[i] == -1` slots
+/// are unused (they read as `N`, which must not be mistaken for devices).
+/// `None` when a file is unreadable, holds an unknown token, or `nr` is not a
+/// load-time device (auto-assigned) — callers fail closed on it.
+pub(crate) fn exclusive_caps_for_video(
+    video_nr: &str,
+    exclusive_caps: &str,
+    nr: u32,
+) -> Option<bool> {
+    let numbers: Vec<i64> = video_nr
+        .split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(|t| t.parse::<i64>().ok())
+        .collect::<Option<_>>()?;
+    let index = numbers.iter().position(|&n| n == i64::from(nr))?;
+    let flags: Vec<bool> = exclusive_caps
+        .split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(parse_flag_token)
+        .collect::<Option<_>>()?;
+    flags.get(index).copied()
 }
 
-fn module_exclusive_caps() -> Option<bool> {
-    parse_exclusive_caps(&fs::read_to_string(SYSFS_EXCLUSIVE_CAPS).ok()?)
+fn parse_flag_token(token: &str) -> Option<bool> {
+    match token {
+        "Y" | "y" | "1" | "true" | "on" => Some(true),
+        "N" | "n" | "0" | "false" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+/// Session state of the Frameiru device, read from the module's sysfs
+/// parameters; `None` when the module is loaded but the flag cannot be
+/// confirmed.
+pub(crate) fn module_exclusive_caps_for(nr: u32) -> Option<bool> {
+    let video_nr = fs::read_to_string(SYSFS_VIDEO_NR).ok()?;
+    let exclusive = fs::read_to_string(SYSFS_EXCLUSIVE_CAPS).ok()?;
+    exclusive_caps_for_video(&video_nr, &exclusive, nr)
 }
 
 /// Installs the boot config (used by `frameiru-cli setup`). When the second
@@ -185,17 +219,22 @@ pub fn install(boot: &BootConfig) -> Result<()> {
     );
     println!("ok: v4l2loopback will now load at every boot with exclusive_caps=1, card_label=\"Frameiru\", video_nr=10");
 
-    match (Path::new(SYSFS_MODULE).is_dir(), module_exclusive_caps()) {
+    match (
+        Path::new(SYSFS_MODULE).is_dir(),
+        module_exclusive_caps_for(VIDEO_NR),
+    ) {
         (true, Some(true)) => println!("note: module is already loaded correctly for this session"),
         (true, Some(false)) => eprintln!(
-            "warning: module is loaded WITHOUT exclusive_caps; it takes effect after a reload \
-             (close apps using it, then: sudo rmmod v4l2loopback && sudo modprobe v4l2loopback \
-             exclusive_caps=1 card_label=\"Frameiru\" video_nr=10) or use the frameiru-ui \
-             LOAD VIRTUAL CAMERA button"
+            "warning: module is loaded WITHOUT exclusive_caps for /dev/video{VIDEO_NR}; it takes \
+             effect after a reload (close apps using it, then: sudo rmmod v4l2loopback && sudo \
+             modprobe v4l2loopback exclusive_caps=1 card_label=\"Frameiru\" video_nr=10) or use \
+             the frameiru-ui LOAD VIRTUAL CAMERA button"
         ),
-        (true, None) => {
-            eprintln!("warning: module is loaded but its exclusive_caps flag is unreadable")
-        }
+        (true, None) => eprintln!(
+            "warning: module is loaded but exclusive_caps for /dev/video{VIDEO_NR} could not be \
+             confirmed (was it loaded with the Frameiru options?); reload it to be sure, or use \
+             the frameiru-ui LOAD VIRTUAL CAMERA button"
+        ),
         (false, _) => println!(
             "note: not loaded in this session yet — it loads at next boot, or now with:\n  \
              {} (the frameiru-ui LOAD VIRTUAL CAMERA button does the same)",
@@ -322,15 +361,46 @@ mod tests {
     }
 
     #[test]
-    fn exclusive_caps_requires_all_tokens_true() {
-        assert_eq!(parse_exclusive_caps("Y"), Some(true));
-        assert_eq!(parse_exclusive_caps("Y,Y"), Some(true));
-        assert_eq!(parse_exclusive_caps("1,true\n"), Some(true));
-        assert_eq!(parse_exclusive_caps("Y,N"), Some(false));
-        assert_eq!(parse_exclusive_caps("N"), Some(false));
-        assert_eq!(parse_exclusive_caps(""), Some(false));
-        assert_eq!(parse_exclusive_caps("maybe"), Some(false));
-        assert_eq!(parse_exclusive_caps("Y,maybe"), Some(false));
+    fn exclusive_caps_matched_through_video_nr_array() {
+        // Real sysfs shape of the official load: one device (index 0) on
+        // video10, remaining slots unused; the trailing Ns are not devices.
+        assert_eq!(
+            exclusive_caps_for_video("10,-1,-1,-1,-1,-1,-1,-1", "Y,N,N,N,N,N,N,N", 10),
+            Some(true)
+        );
+        // Loaded without exclusive_caps: same layout, slot 0 is N.
+        assert_eq!(
+            exclusive_caps_for_video("10,-1,-1,-1,-1,-1,-1,-1", "N,N,N,N,N,N,N,N", 10),
+            Some(false)
+        );
+        // Foreign multi-device load: our device is not index 0, and the
+        // neighbours' flags must not leak onto it.
+        assert_eq!(
+            exclusive_caps_for_video("5,10,-1,-1,-1,-1,-1,-1", "Y,Y,N,N,N,N,N,N", 10),
+            Some(true)
+        );
+        assert_eq!(
+            exclusive_caps_for_video("5,10,-1,-1,-1,-1,-1,-1", "Y,N,N,N,N,N,N,N", 10),
+            Some(false)
+        );
+        assert_eq!(
+            exclusive_caps_for_video("5,10,-1,-1,-1,-1,-1,-1", "Y,N,N,N,N,N,N,N", 5),
+            Some(true)
+        );
+        // Auto-assigned (video_nr=-1), unreadable, or garbage: unconfirmable.
+        assert_eq!(exclusive_caps_for_video("-1,-1", "Y,N", 10), None);
+        assert_eq!(exclusive_caps_for_video("", "Y", 10), None);
+        assert_eq!(exclusive_caps_for_video("10", "maybe", 10), None);
+        assert_eq!(exclusive_caps_for_video("ten", "Y", 10), None);
+        // sysfs appends a newline to the last token.
+        assert_eq!(exclusive_caps_for_video("10,-1\n", "Y,N\n", 10), Some(true));
+    }
+
+    #[test]
+    fn load_options_match_the_exported_constants() {
+        let options = String::from_utf8(modprobe_content()).unwrap();
+        assert!(options.contains(&format!("card_label=\"{CARD_LABEL}\"")));
+        assert!(options.contains(&format!("video_nr={VIDEO_NR}")));
     }
 
     #[test]

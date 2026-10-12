@@ -12,7 +12,7 @@ use std::process::Command;
 
 use anyhow::Result;
 
-use super::setup::{self, MODULE_NAME, SYSFS_EXCLUSIVE_CAPS, SYSFS_MODULE};
+use super::setup::{self, MODULE_NAME, SYSFS_MODULE};
 
 const EBUSY: i32 = 16;
 const EACCES: i32 = 13;
@@ -166,21 +166,37 @@ fn run_checks(boot: &setup::BootConfig) -> Vec<Check> {
         },
     });
 
-    // 2. exclusive_caps (only meaningful when the module is loaded).
+    // Enumerated once: checks 2 and 3 both need the loopback node set.
+    let nodes = sysfs_loopback_nodes(Path::new("/sys/class/video4linux"));
+
+    // 2. exclusive_caps of the virtual camera node (only meaningful when the
+    // module is loaded).
     if module_loaded {
-        let exclusive = setup::parse_exclusive_caps(
-            &std::fs::read_to_string(SYSFS_EXCLUSIVE_CAPS).unwrap_or_default(),
-        )
-        .unwrap_or(false);
+        // Prefer the Frameiru-labelled node; the official load always creates
+        // the camera on `video_nr=10`, so that number is the honest fallback.
+        let target = nodes
+            .iter()
+            .find(|(_, name)| name == setup::CARD_LABEL)
+            .map_or(setup::VIDEO_NR, |(nr, _)| *nr);
+        let exclusive = setup::module_exclusive_caps_for(target);
         checks.push(Check {
             label: "exclusive_caps=1 (visible to Chrome/Zoom)",
-            level: if exclusive { Level::Ok } else { Level::Fail },
-            detail: if exclusive {
-                String::new()
+            level: if exclusive == Some(true) {
+                Level::Ok
             } else {
-                "module loaded without exclusive_caps; reload required".into()
+                Level::Fail
             },
-            fix: if exclusive {
+            detail: match exclusive {
+                Some(true) => String::new(),
+                Some(false) => format!(
+                    "/dev/video{target}: device is not in exclusive_caps mode; reload required"
+                ),
+                None => format!(
+                    "/dev/video{target}: exclusive_caps could not be confirmed; reload with \
+                     the Frameiru options"
+                ),
+            },
+            fix: if exclusive == Some(true) {
                 String::new()
             } else {
                 "module".into()
@@ -196,7 +212,6 @@ fn run_checks(boot: &setup::BootConfig) -> Vec<Check> {
     }
 
     // 3. Loopback node present in sysfs (driver link), plus its card name.
-    let nodes = sysfs_loopback_nodes(Path::new("/sys/class/video4linux"));
     if nodes.is_empty() {
         let level = if module_loaded {
             Level::Fail

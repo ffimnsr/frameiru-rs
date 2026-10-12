@@ -13,9 +13,10 @@ use std::process::{Command, ExitCode};
 
 pub const MODULE_NAME: &str = "v4l2loopback";
 pub const SYSFS_MODULE: &str = "/sys/module/v4l2loopback";
+pub const SYSFS_VIDEO_NR: &str = "/sys/module/v4l2loopback/parameters/video_nr";
 pub const SYSFS_EXCLUSIVE_CAPS: &str = "/sys/module/v4l2loopback/parameters/exclusive_caps";
 pub const CARD_LABEL: &str = "Frameiru";
-pub const VIDEO_NR: &str = "10";
+pub const VIDEO_NR: u32 = 10;
 
 /// Where `modprobe`/`rmmod` live on typical distros; the bare name is a
 /// PATH fallback (pkexec ships a minimal but sane PATH).
@@ -64,17 +65,19 @@ fn main() -> ExitCode {
 }
 
 /// Loads the module with the Frameiru parameters, idempotently: already
-/// loaded with `exclusive_caps` -> no-op; loaded without it -> reload.
+/// loaded with `exclusive_caps` for our device -> no-op; anything else ->
+/// reload.
 fn ensure_loaded() -> Result<(), String> {
     let mut reload_note = String::new();
+    let node = video_node_path();
     if Path::new(SYSFS_MODULE).is_dir() {
-        if exclusive_caps_enabled() {
+        if node.exists() && exclusive_caps_for_video(VIDEO_NR) {
             return Ok(());
         }
-        // Loaded with exclusive_caps=0 (/etc/modprobe.d, manual modprobe):
-        // try to unload so the reload takes effect. rmmod may fail because
-        // another app holds the devices (OBS, a second Frameiru) — that is
-        // not fatal yet, the modprobe + verification below decides.
+        // Loaded without exclusive_caps (or without our device): try to
+        // unload so the reload takes effect. rmmod may fail because another
+        // app holds the devices (OBS, a second Frameiru) — that is not fatal
+        // yet, the modprobe + verification below decides.
         if let Err(e) = run_tool("rmmod", &[MODULE_NAME]) {
             reload_note = format!(" (reload blocked: {e})");
         }
@@ -83,34 +86,63 @@ fn ensure_loaded() -> Result<(), String> {
     let nr = format!("video_nr={VIDEO_NR}");
     run_tool("modprobe", &[MODULE_NAME, "exclusive_caps=1", &label, &nr])?;
     wait_for_video_node();
-    if !exclusive_caps_enabled() {
+    if !node.exists() {
         return Err(format!(
-            "{MODULE_NAME} loaded but exclusive_caps did not take effect{reload_note}; \
+            "{MODULE_NAME} was loaded but {} did not appear{reload_note}; check `dmesg` and \
+             /etc/modprobe.d for conflicting v4l2loopback options",
+            node.display()
+        ));
+    }
+    if !exclusive_caps_for_video(VIDEO_NR) {
+        return Err(format!(
+            "{MODULE_NAME} loaded but exclusive_caps did not take effect for {}{reload_note}; \
              close other applications using it (e.g. OBS) and check /etc/modprobe.d \
-             for conflicting v4l2loopback options"
+             for conflicting v4l2loopback options",
+            node.display()
         ));
     }
     Ok(())
 }
 
-/// True when every device in the module-wide bool-array parameter is
-/// exclusive (`Y`/`1`). Unreadable or empty files read as "not enabled"
-/// here because this helper's only job is to guarantee the right config.
-fn exclusive_caps_enabled() -> bool {
-    std::fs::read_to_string(SYSFS_EXCLUSIVE_CAPS)
-        .map(|content| exclusive_caps_content(&content))
-        .unwrap_or(false)
+/// True when the module's `exclusive_caps` array flags the device created for
+/// `VIDEO_NR` as exclusive. Unreadable files read as "not enabled" (fail
+/// closed: this helper's only job is guaranteeing the right config).
+fn exclusive_caps_for_video(nr: u32) -> bool {
+    let Some(video_nr) = std::fs::read_to_string(SYSFS_VIDEO_NR).ok() else {
+        return false;
+    };
+    let Some(exclusive_caps) = std::fs::read_to_string(SYSFS_EXCLUSIVE_CAPS).ok() else {
+        return false;
+    };
+    exclusive_caps_at_video(&video_nr, &exclusive_caps, nr).unwrap_or(false)
 }
 
-fn exclusive_caps_content(content: &str) -> bool {
-    let mut seen = false;
-    for token in content.split(',').map(str::trim).filter(|t| !t.is_empty()) {
-        if !matches!(token, "Y" | "y" | "1" | "true" | "on") {
-            return false;
-        }
-        seen = true;
-    }
-    seen
+/// `exclusive_caps` entry of the device created for `/dev/video{nr}`, matched
+/// through the `video_nr` array.
+///
+/// Both module parameters are fixed `MAX_DEVICES`-long kernel arrays: entry
+/// `i` describes device `i`, and `-1` video numbers label unused slots whose
+/// `N` flags are defaults, not devices. `None` when the arrays are
+/// unreadable/garbled or `nr` is not a load-time device (auto-assigned).
+fn exclusive_caps_at_video(video_nr: &str, exclusive_caps: &str, nr: u32) -> Option<bool> {
+    let numbers: Vec<i64> = video_nr
+        .split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(|t| t.parse::<i64>().ok())
+        .collect::<Option<_>>()?;
+    let index = numbers.iter().position(|&n| n == i64::from(nr))?;
+    let flags: Vec<bool> = exclusive_caps
+        .split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(|t| match t {
+            "Y" | "y" | "1" | "true" | "on" => Some(true),
+            "N" | "n" | "0" | "false" | "off" => Some(false),
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+    flags.get(index).copied()
 }
 
 fn video_node_path() -> PathBuf {
@@ -182,14 +214,28 @@ mod tests {
     }
 
     #[test]
-    fn exclusive_caps_requires_all_devices_exclusive() {
-        assert!(exclusive_caps_content("Y"));
-        assert!(exclusive_caps_content("Y,Y"));
-        assert!(exclusive_caps_content("1,true\n"));
-        assert!(!exclusive_caps_content("N"));
-        assert!(!exclusive_caps_content("Y,N"));
-        assert!(!exclusive_caps_content(""));
-        assert!(!exclusive_caps_content("maybe"));
+    fn exclusive_caps_matched_through_video_nr_array() {
+        // The helper's own load shape: one device (index 0) on video10; the
+        // unused slots read as N and are not devices.
+        assert_eq!(
+            exclusive_caps_at_video("10,-1,-1,-1,-1,-1,-1,-1", "Y,N,N,N,N,N,N,N", 10),
+            Some(true)
+        );
+        assert_eq!(
+            exclusive_caps_at_video("10,-1,-1,-1,-1,-1,-1,-1", "N,N,N,N,N,N,N,N", 10),
+            Some(false)
+        );
+        // A foreign multi-device load must not leak a neighbour's flag.
+        assert_eq!(
+            exclusive_caps_at_video("5,10,-1,-1,-1,-1,-1,-1", "Y,N,N,N,N,N,N,N", 10),
+            Some(false)
+        );
+        // Auto-assigned, unreadable, or garbled: fail closed.
+        assert_eq!(exclusive_caps_at_video("-1,-1", "Y,N", 10), None);
+        assert_eq!(exclusive_caps_at_video("", "Y", 10), None);
+        assert_eq!(exclusive_caps_at_video("10", "maybe", 10), None);
+        // sysfs appends a newline to the last token.
+        assert_eq!(exclusive_caps_at_video("10,-1\n", "Y,N\n", 10), Some(true));
     }
 
     #[test]

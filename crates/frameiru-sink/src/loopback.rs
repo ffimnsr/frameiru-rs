@@ -12,9 +12,10 @@
 //! - A second writer fails `S_FMT`/`REQBUFS` with `EBUSY` (single-writer
 //!   device), so a failed open while the device looks output-capable means
 //!   another application holds it.
-//! - `exclusive_caps` is a `module_param_array(bool)` exposed read-only at
-//!   `/sys/module/v4l2loopback/parameters/exclusive_caps` as `Y`/`N` per
-//!   device (`,`-separated when `devices > 1`).
+//! - Exclusivity is therefore detected per node from the announced caps
+//!   themselves. The module-wide `exclusive_caps` sysfs array is not used:
+//!   it always has `MAX_DEVICES` slots, unused slots read as `N` (the
+//!   default), and its indices cannot be mapped to `/dev/videoN` reliably.
 
 use std::path::{Path, PathBuf};
 
@@ -54,11 +55,29 @@ pub struct LoopbackNode {
     pub open_error: Option<i32>,
 }
 
+impl LoopbackNode {
+    /// Whether this device announces its capabilities exclusively (the
+    /// per-device `exclusive_caps` mode it was created with).
+    ///
+    /// Derived from the caps window the kernel exposes (see the module docs):
+    /// an exclusive device announces OUTPUT while idle (or with only capture
+    /// clients attached) and CAPTURE while a producer streams; a
+    /// non-exclusive device always announces both. `None` when the node
+    /// could not be opened for caps, i.e. the mode is unclassifiable.
+    pub fn exclusive_caps(&self) -> Option<bool> {
+        match (self.output_capable, self.capture_capable) {
+            (true, false) | (false, true) => Some(true),
+            (true, true) => Some(false),
+            (false, false) => None,
+        }
+    }
+}
+
 /// Health of the virtual-camera sink, in probe priority order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoopbackStatus {
     /// A writable loopback node exists (or was opened); `exclusive_caps`
-    /// reflects the module parameter, which matters for Chrome/Zoom.
+    /// reflects the device's caps window, which matters for Chrome/Zoom.
     Ready { path: PathBuf, exclusive_caps: bool },
     /// Module not loaded and no loopback node present.
     ModuleMissing,
@@ -149,36 +168,13 @@ pub fn module_loaded() -> bool {
     Path::new(MODULE_SYSFS).is_dir()
 }
 
-/// Parses the kernel's bool-array sysfs output (`Y`,`N`,..., possibly one
-/// value) into "every device is exclusive". `None` when unreadable/mixed
-/// tokens we cannot map.
-fn parse_exclusive_all(content: &str) -> Option<bool> {
-    let tokens: Vec<&str> = content
-        .split(',')
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
-        .collect();
-    if tokens.is_empty() {
-        return None;
-    }
-    let mut exclusive = true;
-    for token in tokens {
-        exclusive &= match token {
-            "Y" | "y" | "1" | "true" | "on" => true,
-            "N" | "n" | "0" | "false" | "off" => false,
-            _ => return None,
-        };
-    }
-    Some(exclusive)
-}
-
-/// Module-wide `exclusive_caps` state; `None` when unreadable (then callers
-/// assume the safe default).
-pub fn exclusive_caps() -> Option<bool> {
-    let params = Path::new(MODULE_SYSFS)
-        .join("parameters")
-        .join("exclusive_caps");
-    parse_exclusive_all(&std::fs::read_to_string(params).ok()?)
+/// `exclusive_caps` mode of the loopback node currently at `path`; `None`
+/// when no such loopback node is enumerable right now.
+pub fn path_exclusive_caps(path: &Path) -> Option<bool> {
+    loopback_nodes()
+        .into_iter()
+        .find(|node| node.path == path)?
+        .exclusive_caps()
 }
 
 /// Tries every candidate node in preferred order and returns the first one
@@ -237,11 +233,10 @@ pub fn probe() -> LoopbackStatus {
         };
     }
 
-    let exclusive = exclusive_caps().unwrap_or(true);
     let mut first_issue: Option<LoopbackStatus> = None;
     for idx in preferred_order(&nodes) {
         let node = &nodes[idx];
-        let status = probe_node(node, exclusive);
+        let status = probe_node(node);
         if matches!(status, LoopbackStatus::Ready { .. }) {
             return status;
         }
@@ -253,7 +248,7 @@ pub fn probe() -> LoopbackStatus {
     })
 }
 
-fn probe_node(node: &LoopbackNode, exclusive: bool) -> LoopbackStatus {
+fn probe_node(node: &LoopbackNode) -> LoopbackStatus {
     if let Some(errno) = node.open_error {
         return classify_io_error(&node.path, errno);
     }
@@ -266,9 +261,11 @@ fn probe_node(node: &LoopbackNode, exclusive: bool) -> LoopbackStatus {
         };
     }
     match LoopbackSink::open(&node.path, PROBE_RESOLUTION) {
+        // Output-capable node: the caps window decides exclusivity (idle
+        // exclusive nodes are OUTPUT-only, non-exclusive nodes have both).
         Ok(_) => LoopbackStatus::Ready {
             path: node.path.clone(),
-            exclusive_caps: exclusive,
+            exclusive_caps: node.exclusive_caps().unwrap_or(true),
         },
         Err(e) => classify_open_error(&node.path, &e),
     }
@@ -291,15 +288,30 @@ mod tests {
     }
 
     #[test]
-    fn parses_single_and_array_exclusive_caps() {
-        assert_eq!(parse_exclusive_all("Y"), Some(true));
-        assert_eq!(parse_exclusive_all("N"), Some(false));
-        assert_eq!(parse_exclusive_all("Y,Y,Y"), Some(true));
-        assert_eq!(parse_exclusive_all("Y,N"), Some(false));
-        assert_eq!(parse_exclusive_all("N,N"), Some(false));
-        assert_eq!(parse_exclusive_all("N\n"), Some(false));
-        assert_eq!(parse_exclusive_all(""), None);
-        assert_eq!(parse_exclusive_all("maybe"), None);
+    fn exclusive_caps_derived_from_the_caps_window() {
+        // Regression: a single-device load (`exclusive_caps=1 video_nr=10`)
+        // gives an idle OUTPUT-only node; it must read as exclusive even
+        // though the module-wide sysfs array shows `Y` only in slot 0.
+        let mut idle_exclusive = node("/dev/video10", "Frameiru");
+        idle_exclusive.capture_capable = false;
+        assert_eq!(idle_exclusive.exclusive_caps(), Some(true));
+
+        // Same device while a producer streams: CAPTURE-only.
+        let mut streaming_exclusive = node("/dev/video10", "Frameiru");
+        streaming_exclusive.output_capable = false;
+        assert_eq!(streaming_exclusive.exclusive_caps(), Some(true));
+
+        // Non-exclusive devices always announce both caps.
+        assert_eq!(
+            node("/dev/video10", "Frameiru").exclusive_caps(),
+            Some(false)
+        );
+
+        // Neither cap readable: unclassifiable.
+        let mut unreadable = node("/dev/video10", "Frameiru");
+        unreadable.capture_capable = false;
+        unreadable.output_capable = false;
+        assert_eq!(unreadable.exclusive_caps(), None);
     }
 
     #[test]
@@ -356,7 +368,7 @@ mod tests {
         n.output_capable = false;
         n.capture_capable = true;
         assert_eq!(
-            probe_node(&n, true),
+            probe_node(&n),
             LoopbackStatus::Busy {
                 path: "/dev/video10".into()
             }
@@ -368,7 +380,7 @@ mod tests {
         let mut n = node("/dev/video10", "Frameiru");
         n.open_error = Some(13);
         assert_eq!(
-            probe_node(&n, true),
+            probe_node(&n),
             LoopbackStatus::PermissionDenied {
                 path: "/dev/video10".into()
             }

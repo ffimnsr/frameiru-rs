@@ -26,7 +26,8 @@ pub const MODPROBE_HINT: &str =
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(not(feature = "v4l2"), allow(dead_code))]
 pub enum SinkState {
-    /// A writable loopback node exists; `exclusive` reflects the module flag.
+    /// A writable loopback node exists; `exclusive` reflects the device's
+    /// announced caps (its `exclusive_caps` mode).
     Ready { path: PathBuf, exclusive: bool },
     /// Kernel module not loaded.
     ModuleMissing,
