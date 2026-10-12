@@ -240,12 +240,13 @@ fn apply_overlay(out: &mut [u8], w: usize, h: usize, mode: OverlayMode, timestam
             });
         }
         // Extended effects (chromatic aberration, VHS, dither, halftone,
-        // grayscale) are implemented in `crate::overlay`.
+        // grayscale, cyberpunk) are implemented in `crate::overlay`.
         OverlayMode::ChromaticAberration
         | OverlayMode::Vhs
         | OverlayMode::Dither
         | OverlayMode::Halftone
-        | OverlayMode::Grayscale => {
+        | OverlayMode::Grayscale
+        | OverlayMode::Cyberpunk => {
             crate::overlay::apply(out, w, h, mode, t);
         }
     }

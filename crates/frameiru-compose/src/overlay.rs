@@ -37,6 +37,11 @@ pub(crate) fn apply(out: &mut [u8], w: usize, h: usize, mode: OverlayMode, t: f6
             grayscale(out);
             true
         }
+        OverlayMode::Cyberpunk => {
+            // Multi-pass stack in its own module (halation + tear + split).
+            crate::cyberpunk::apply(out, w, h, t);
+            true
+        }
         _ => false,
     }
 }
@@ -235,9 +240,10 @@ fn hash01(mut n: u32) -> f32 {
 }
 
 /// Bilinear RGB sample at fractional pixel coordinates, clamped to the frame
-/// (matches the GPU's linear sampler with clamp-to-edge addressing).
+/// (matches the GPU's linear sampler with clamp-to-edge addressing). Shared
+/// with the cyberpunk stack.
 #[inline]
-fn sample_bilinear(src: &[u8], w: usize, h: usize, fx: f64, fy: f64) -> [f32; 3] {
+pub(crate) fn sample_bilinear(src: &[u8], w: usize, h: usize, fx: f64, fy: f64) -> [f32; 3] {
     let fx = fx.clamp(0.0, (w - 1) as f64);
     let fy = fy.clamp(0.0, (h - 1) as f64);
     let x0 = fx.floor() as usize;
@@ -378,6 +384,7 @@ mod tests {
             OverlayMode::Dither,
             OverlayMode::Halftone,
             OverlayMode::Grayscale,
+            OverlayMode::Cyberpunk,
         ] {
             let mut buf = vec![120u8; 2 * 2 * 3];
             assert!(apply(&mut buf, 2, 2, mode, 0.0), "{mode:?} must be handled");

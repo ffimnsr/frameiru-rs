@@ -878,6 +878,7 @@ fn parse_overlay(name: &str) -> Option<OverlayMode> {
         "dither" => Some(OverlayMode::Dither),
         "halftone" => Some(OverlayMode::Halftone),
         "grayscale" => Some(OverlayMode::Grayscale),
+        "cyberpunk" => Some(OverlayMode::Cyberpunk),
         _ => None,
     }
 }
@@ -900,6 +901,7 @@ mod tests {
         assert_eq!(parse_overlay("dither"), Some(OverlayMode::Dither));
         assert_eq!(parse_overlay("halftone"), Some(OverlayMode::Halftone));
         assert_eq!(parse_overlay("grayscale"), Some(OverlayMode::Grayscale));
+        assert_eq!(parse_overlay("cyberpunk"), Some(OverlayMode::Cyberpunk));
         assert_eq!(parse_overlay("banana"), None);
         assert_eq!(parse_overlay(""), None);
     }

@@ -1060,6 +1060,15 @@ export component MainWindow inherits Window {
                                     }
                                 }
 
+                                CyberButton {
+                                    text: "Cyberpunk";
+                                    active: root.overlay_effect == "cyberpunk";
+                                    clicked => {
+                                        root.overlay_effect = "cyberpunk";
+                                        root.set_overlay("cyberpunk");
+                                    }
+                                }
+
                                 Rectangle { horizontal-stretch: 1; background: transparent; }
                             }
                         }

@@ -5,6 +5,7 @@
 //! [`new_compositor`] to get a working compositor with automatic GPU fallback.
 
 pub mod cpu;
+pub(crate) mod cyberpunk;
 pub mod mode;
 pub(crate) mod overlay;
 pub mod video;

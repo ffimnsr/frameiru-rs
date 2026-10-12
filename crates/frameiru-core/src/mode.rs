@@ -44,4 +44,8 @@ pub enum OverlayMode {
     Halftone,
     /// Luma-weighted grayscale conversion.
     Grayscale,
+    /// Cyberpunk spectrum: color grade, halation bloom, erratic RGB split,
+    /// banded tearing + macroblocking, holographic grid, scan beam, and sync
+    /// flicker (CPU in `frameiru_compose::cyberpunk`; GPU branch `ov == 9`).
+    Cyberpunk,
 }

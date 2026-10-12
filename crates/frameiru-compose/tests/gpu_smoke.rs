@@ -250,5 +250,28 @@ fn composites_on_available_adapter() {
         out.data.chunks(3).all(|p| p[0] == p[1] && p[1] == p[2]),
         "grayscale output must have equal channels"
     );
+
+    // Cyberpunk: dark frame gains the blue/purple shadow grade and the
+    // bright block feeds the halation bloom into its surroundings.
+    gpu.update_overlay(OverlayMode::Cyberpunk);
+    let mut src_cy = frame(res(32, 32), 20);
+    for y in 2..6 {
+        for x in 2..6 {
+            let i = (y * 32 + x) * 3;
+            src_cy.data[i..i + 3].copy_from_slice(&[255, 250, 235]);
+        }
+    }
+    let m_cy = mask(res(32, 32), 0.0);
+    gpu.composite(&src_cy, &m_cy, &mut out).unwrap();
+    // Shadow push: dark pixels gain blue, matching the CPU grade.
+    let dark = &out.data[(15 * 32 + 15) * 3..(15 * 32 + 15) * 3 + 3];
+    assert!(
+        dark[2] > dark[0],
+        "cyberpunk shadows must drift blue: {dark:?}"
+    );
+    // Bloom: a pixel just outside the bright block is lifted above its
+    // source tone by the blurred halo.
+    let fringe = &out.data[(6 * 32 + 8) * 3..(6 * 32 + 8) * 3 + 3];
+    assert!(fringe[1] > 20, "halo must brighten the fringe: {fringe:?}");
     gpu.update_overlay(OverlayMode::None);
 }
