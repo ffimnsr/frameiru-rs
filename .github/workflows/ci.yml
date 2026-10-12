@@ -107,20 +107,8 @@ jobs:
         run: cargo build --workspace --all-features --locked
 
   test:
-    name: Test (${{ matrix.name }})
+    name: Test
     runs-on: ubuntu-latest
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Hermetic default matrix: no cameras, no kernel module, no ONNX
-          # Runtime download (see README "Testing").
-          - name: default
-            args: --workspace --locked
-          # Everything on: ONNX inference tests, GPU compositor, V4L2, D-Bus.
-          - name: all-features
-            args: --workspace --all-features --locked
 
     steps:
       - name: Checkout
@@ -138,8 +126,12 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
 
+      # Hermetic default matrix: no cameras, no kernel module, no ONNX
+      # Runtime download (see README "Testing"). The `--all-features` matrix
+      # is intentionally not CI: enabling `onnx-dynamic` makes ort abort
+      # unless a system libonnxruntime is dlopen-able.
       - name: Run tests
-        run: cargo test --quiet ${{ matrix.args }}
+        run: cargo test --quiet --workspace --locked
 
   test-arm64:
     # Covers the aarch64 release artifact natively (GitHub-hosted arm64 runner).
@@ -166,7 +158,7 @@ jobs:
         run: cargo test --quiet --workspace --locked
 
   installer:
-    name: Installer check
+    name: Installer and hooks check
     runs-on: ubuntu-latest
 
     steps:
@@ -176,8 +168,81 @@ jobs:
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
 
-      - name: Syntax check
+      - name: Syntax check installer
         run: sh -n install.sh
 
       - name: Lint installer
         run: shellcheck --shell=dash --external-sources install.sh
+
+      - name: Syntax check git hooks
+        run: |
+          sh -n .githooks/pre-commit
+          sh -n .githooks/lib/githooks.sh
+          sh -n .githooks/record-tests-pass
+
+      - name: Lint git hooks
+        run: shellcheck --shell=dash --external-sources .githooks/pre-commit .githooks/lib/githooks.sh .githooks/record-tests-pass
+
+      - name: Test git hook state logic
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          scratch="$(mktemp -d)"
+          trap 'rm -rf "$scratch"' EXIT
+
+          git -C "$scratch" init -q
+          git -C "$scratch" config user.email "ci@example.com"
+          git -C "$scratch" config user.name "CI"
+          mkdir -p "$scratch/crates/demo/src"
+          printf 'fn main() {}\n' > "$scratch/crates/demo/src/main.rs"
+          cp -r .githooks "$scratch/"
+          git -C "$scratch" add crates/demo/src/main.rs
+
+          key() {
+            (cd "$scratch" && FRAMEIRU_PRE_COMMIT_STATE_FILE="$scratch/target/.githooks-state" \
+              sh -c '. .githooks/lib/githooks.sh; githooks_compute_key')
+          }
+
+          key1="$(key)"
+          key2="$(key)"
+          [ "$key1" = "$key2" ]  # deterministic
+
+          # A staged change to a scoped file changes the key...
+          printf 'fn main() { println!("x"); }\n' > "$scratch/crates/demo/src/main.rs"
+          git -C "$scratch" add -A
+          key3="$(key)"
+          [ "$key1" != "$key3" ]
+
+          # ...and committing does not flip it back (content, not git state).
+          git -C "$scratch" commit -qm test
+          key4="$(key)"
+          [ "$key3" = "$key4" ]
+
+          # Out-of-scope files (README) do not change the key.
+          printf 'docs\n' > "$scratch/README.md"
+          key5="$(key)"
+          [ "$key4" = "$key5" ]
+
+          # record-tests-pass writes state that githooks_state_matches accepts.
+          (cd "$scratch" && FRAMEIRU_PRE_COMMIT_STATE_FILE="$scratch/target/.githooks-state" \
+            sh .githooks/record-tests-pass)
+          cmd="$(cd "$scratch" && FRAMEIRU_PRE_COMMIT_STATE_FILE="$scratch/target/.githooks-state" \
+            sh -c '. .githooks/lib/githooks.sh; githooks_test_cmd')"
+          stored_key="$(key)"
+          (cd "$scratch" && FRAMEIRU_PRE_COMMIT_STATE_FILE="$scratch/target/.githooks-state" \
+            sh -c '. .githooks/lib/githooks.sh; githooks_state_matches "$1" "$2"' sh "$cmd" "$stored_key")
+
+          # A mismatched key or command is rejected (state is stale).
+          if (cd "$scratch" && FRAMEIRU_PRE_COMMIT_STATE_FILE="$scratch/target/.githooks-state" \
+              sh -c '. .githooks/lib/githooks.sh; githooks_state_matches "$1" "$2"' sh "$cmd" bogus-key); then
+            echo "state_matches wrongly accepted a stale key" >&2
+            exit 1
+          fi
+          if (cd "$scratch" && FRAMEIRU_PRE_COMMIT_STATE_FILE="$scratch/target/.githooks-state" \
+              sh -c '. .githooks/lib/githooks.sh; githooks_state_matches "$1" "$2"' sh "cargo test --other" "$stored_key"); then
+            echo "state_matches wrongly accepted a stale command" >&2
+            exit 1
+          fi
+
+          echo "git hook state logic: ok"

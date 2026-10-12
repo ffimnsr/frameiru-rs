@@ -1,0 +1,24 @@
+#!/bin/sh
+# shellcheck shell=dash
+# Records that the full workspace test suite passed for the current tree.
+# Called by the `ci` task (mk) after its test step, so the pre-commit hook
+# can skip its own test run. The canonical command is shared with the hook
+# via lib/githooks.sh, so both sides always agree on what was tested.
+set -eu
+
+cd "$(git rev-parse --show-toplevel)"
+
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+# shellcheck source=.githooks/lib/githooks.sh
+. "${SCRIPT_DIR}/lib/githooks.sh"
+
+main() {
+    local _cmd _key _file
+    _cmd="$(githooks_test_cmd)"
+    _key="$(githooks_compute_key)"
+    githooks_record_pass "${_cmd}" "${_key}"
+    _file="$(githooks_state_file)"
+    printf '[githooks] recorded full workspace test pass for this tree (%s)\n' "${_file}"
+}
+
+main "$@"

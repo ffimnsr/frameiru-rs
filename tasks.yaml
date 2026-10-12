@@ -9,11 +9,26 @@ tasks:
     description: Sample greet command
 
   ci:
-    description: Run the same quality gates as the CI workflow (fmt, clippy, tests)
+    description: Run the same quality gates as the CI workflow (fmt, clippy, workspace tests) and record the test pass for the pre-commit hook
     commands:
       - cargo fmt --all --check
       - cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - cargo test --quiet --workspace --locked
+      - sh .githooks/record-tests-pass
+
+  install-githooks:
+    description: Install the pre-commit hook from .githooks into .git/hooks (overwrites a previously installed copy, leaves other hooks alone)
+    commands:
+      - mkdir -p .git/hooks && cp -r .githooks/. .git/hooks/ && chmod +x .git/hooks/pre-commit .git/hooks/record-tests-pass
+      - echo "Installed pre-commit hook to .git/hooks/pre-commit"
+
+  uninstall-githooks:
+    description: Remove the pre-commit hook and its test state (target/.githooks-state)
+    commands:
+      - rm -f .git/hooks/pre-commit .git/hooks/record-tests-pass
+      - rm -rf .git/hooks/lib
+      - rm -f target/.githooks-state
+      - echo "Removed pre-commit hook and test state"
 
   release-package:
     description: Build the four release binaries (full features) and pack dist/*.tar.gz like the release workflow

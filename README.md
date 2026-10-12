@@ -385,6 +385,24 @@ cargo clippy --workspace --all-targets --all-features
 CI runs the same gates (fmt, clippy, docs, build, tests on x86_64 and aarch64, installer
 shellcheck) on every push and pull request; see [.github/workflows/ci.yml](.github/workflows/ci.yml).
 
+### Git hooks
+
+A pre-commit hook runs format, clippy, docs, and the full workspace test suite before every
+commit. Install or remove it with:
+
+```sh
+mk install-githooks
+mk uninstall-githooks
+```
+
+The test step is state-gated: once the workspace test suite passes for the current tree
+(`cargo test --quiet --workspace --locked`), commits that do not change test-relevant
+files skip the test run. The `--all-features` matrix is not used here: with
+`onnx-dynamic` active, ort aborts unless a system ONNX Runtime is dlopen-able. The state
+lives in `target/.githooks-state` (gitignored) and is keyed on file contents, so staging
+vs. committing never matters and README/docs edits do not invalidate it. Running `mk ci`
+outside git also records the pass, so the hook will not re-run the suite.
+
 ## Troubleshooting
 
 - **`/dev/video10` does not exist** — `sudo frameiru-cli doctor` prints the exact cause

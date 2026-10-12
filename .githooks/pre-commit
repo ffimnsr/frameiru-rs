@@ -1,0 +1,49 @@
+#!/bin/sh
+# shellcheck shell=dash
+# Pre-commit gate: format, lint (clippy), docs check, and the full workspace
+# test suite. Lint/format/docs always run; the test step is state-gated —
+# once the full workspace test passes for the current tree (recorded by this
+# hook or by `mk ci` via .githooks/record-tests-pass), commits that do not
+# change test-relevant files skip the test run. State lives in
+# target/.githooks-state, which is gitignored.
+set -eu
+
+cd "$(git rev-parse --show-toplevel)"
+
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+# shellcheck source=.githooks/lib/githooks.sh
+. "${SCRIPT_DIR}/lib/githooks.sh"
+
+say() {
+    printf '[pre-commit] %s\n' "$*"
+}
+
+main() {
+    say 'checking format'
+    cargo fmt --all --check
+
+    say 'checking lint (clippy, all targets, all features)'
+    cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+    say 'checking documentation'
+    RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps --locked
+
+    local _cmd _key
+    _cmd="$(githooks_test_cmd)"
+    _key="$(githooks_compute_key)"
+    if githooks_state_matches "${_cmd}" "${_key}"; then
+        say "tests skipped: workspace test suite already passed for this tree"
+    else
+        say "running workspace test suite (${_cmd})"
+        # Intentional word splitting: the canonical command is stored and
+        # executed as separate arguments.
+        # shellcheck disable=SC2086
+        ${_cmd}
+        githooks_record_pass "${_cmd}" "${_key}"
+        say 'workspace tests passed; state recorded in target/.githooks-state'
+    fi
+
+    say 'done'
+}
+
+main "$@"
