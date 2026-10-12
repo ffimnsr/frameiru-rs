@@ -1,8 +1,9 @@
 #!/bin/sh
 # shellcheck shell=dash
-# Shared githooks helpers: test-command canonicalization and the state-gated
-# test cache. Sourced by .githooks/pre-commit and .githooks/record-tests-pass;
-# functions only, nothing runs on source.
+# Shared githooks helpers: test-command canonicalization, the state-gated
+# test cache, and the .githooks -> hooks-dir drift check. Sourced by
+# .githooks/pre-commit and .githooks/record-tests-pass; functions only,
+# nothing runs on source.
 #
 # State design: the full workspace test suite is expensive, so it only runs
 # when the testable source tree changed since the last recorded pass. The
@@ -100,3 +101,90 @@ githooks_state_when() {
     [ -f "${_file}" ] || return 1
     sed -n 's/^when=//p' "${_file}"
 }
+
+# Hook files managed by this repo: tracked plus non-ignored untracked under
+# .githooks/ (a freshly added hook file is drift-checked before it lands in a
+# commit). Prints repo-root-relative paths, one per line.
+githooks_managed_files() {
+    {
+        git ls-files -z -- .githooks
+        git ls-files -o --exclude-standard -z -- .githooks
+    } | sort -z -u | tr '\0' '\n'
+}
+
+# Canonicalize a path that may not exist yet (pwd -P resolves symlinks so a
+# core.hooksPath symlink to .githooks compares equal to .githooks itself).
+githooks_abspath() {
+    (CDPATH='' cd -- "$1" 2>/dev/null && pwd -P) || printf '%s\n' "$1"
+}
+
+# Warn (never fail) when the installed hook files are not byte-identical to
+# their .githooks/ sources. install-githooks copies files instead of linking
+# them, so a pull or an edit leaves the installed copy running silently stale
+# until the task is re-run. Prints one line per drifted file plus the refresh
+# command; always exits 0. No-op when the hooks dir *is* .githooks (in-place
+# setup via core.hooksPath) or outside a git repository.
+githooks_check_drift() {
+    local _root _src _dst _display _rel _name _warned
+    _root="$(git rev-parse --show-toplevel 2>/dev/null)" || return 0
+    _src="${_root}/.githooks"
+    # Resolve from the root: --git-path output is relative to $PWD (e.g.
+    # ../.git/hooks in a subdirectory) and stays root-relative this way.
+    _dst="$(CDPATH='' cd -- "${_root}" && git rev-parse --git-path hooks 2>/dev/null)" || return 0
+    case "${_dst}" in
+    /*) ;;
+    *) _dst="${_root}/${_dst}" ;;
+    esac
+    if [ "$(githooks_abspath "${_src}")" = "$(githooks_abspath "${_dst}")" ]; then
+        return 0
+    fi
+    _display="${_dst#"${_root}/"}"
+    _warned=0
+    # Heredoc, not a pipe: the loop body sets _warned, which a piped subshell
+    # would drop.
+    while IFS= read -r _rel; do
+        [ -n "${_rel}" ] || continue
+        _name="${_rel#.githooks/}"
+        [ -f "${_src}/${_name}" ] || continue
+        if [ ! -e "${_dst}/${_name}" ]; then
+            printf '[githooks] drift: .githooks/%s is not installed under %s\n' "${_name}" "${_display}"
+            _warned=1
+        elif ! cmp -s "${_src}/${_name}" "${_dst}/${_name}"; then
+            printf '[githooks] drift: %s/%s differs from .githooks/%s\n' "${_display}" "${_name}" "${_name}"
+            _warned=1
+        fi
+    done <<EOF
+$(githooks_managed_files)
+EOF
+    for _name in pre-commit record-tests-pass; do
+        if [ -e "${_src}/${_name}" ] && [ -e "${_dst}/${_name}" ]; then
+            # Nested: a bare `A && B && C` chain would trip `set -e` when the
+            # hook is installed correctly and the last test is false.
+            if [ ! -x "${_dst}/${_name}" ]; then
+                printf '[githooks] drift: %s/%s is not executable; git skips hooks without the exec bit\n' "${_display}" "${_name}"
+                _warned=1
+            fi
+        fi
+    done
+    # Leftovers: installed files this repo no longer ships. Only names the
+    # hook owns are checked, so unrelated user hooks (commit-msg, ...) stay
+    # out of it.
+    for _name in pre-commit record-tests-pass; do
+        if [ -e "${_dst}/${_name}" ] && [ ! -e "${_src}/${_name}" ]; then
+            printf '[githooks] drift: %s/%s is installed but no longer in .githooks/\n' "${_display}" "${_name}"
+            _warned=1
+        fi
+    done
+    for _rel in "${_dst}"/lib/*; do
+        [ -e "${_rel}" ] || continue
+        _name="lib/${_rel##*/}"
+        if [ ! -e "${_src}/${_name}" ]; then
+            printf '[githooks] drift: %s/%s is installed but no longer in .githooks/\n' "${_display}" "${_name}"
+            _warned=1
+        fi
+    done
+    if [ "${_warned}" -eq 1 ]; then
+        printf '[githooks] warning: installed hooks are stale; run mk install-githooks to refresh\n'
+    fi
+    return 0
+} 

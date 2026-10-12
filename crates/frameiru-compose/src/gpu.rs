@@ -816,7 +816,7 @@ impl Compositor for GpuCompositor {
 
         // Foreground RGB -> RGBA upload.
         self.rgba.clear();
-        for px in source.data[..area * 3].chunks_exact(3) {
+        for px in source.data[..area * 3].as_chunks::<3>().0 {
             self.rgba.extend_from_slice(&[px[0], px[1], px[2], 255]);
         }
         Self::upload_rgba(&self.queue, &self.fg_tex, res, 4, &self.rgba);
@@ -1011,7 +1011,7 @@ impl Compositor for GpuCompositor {
                         Self::create_texture(&self.device, *resolution, TEXTURE_FORMAT, "bg");
                 }
                 self.image_rgba.clear();
-                for px in data.chunks_exact(3) {
+                for px in data.as_chunks::<3>().0 {
                     self.image_rgba
                         .extend_from_slice(&[px[0], px[1], px[2], 255]);
                 }
@@ -1027,7 +1027,7 @@ impl Compositor for GpuCompositor {
                     self.bg_tex = Self::create_texture(&self.device, res, TEXTURE_FORMAT, "bg");
                 }
                 self.image_rgba.clear();
-                for px in frame.data.chunks_exact(3) {
+                for px in frame.data.as_chunks::<3>().0 {
                     self.image_rgba
                         .extend_from_slice(&[px[0], px[1], px[2], 255]);
                 }

@@ -264,7 +264,9 @@ pub(crate) fn luma_from_rgb8(src: &[u8], w: usize, h: usize) -> Result<Vec<f32>,
         });
     }
     Ok(src[..need]
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|px| (0.299 * px[0] as f32 + 0.587 * px[1] as f32 + 0.114 * px[2] as f32) / 255.0)
         .collect())
 }

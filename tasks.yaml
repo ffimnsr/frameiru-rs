@@ -11,6 +11,7 @@ tasks:
   ci:
     description: Run the same quality gates as the CI workflow (fmt, clippy, workspace tests) and record the test pass for the pre-commit hook
     commands:
+      - sh -c '. .githooks/lib/githooks.sh; githooks_check_drift'
       - cargo fmt --all --check
       - cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - cargo test --quiet --workspace --locked

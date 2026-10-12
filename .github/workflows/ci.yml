@@ -245,4 +245,63 @@ jobs:
             exit 1
           fi
 
+          # Drift check: installed copies must match .githooks/ sources, and
+          # going stale must be reported without failing the command.
+          drift() {
+            (cd "$scratch" && sh -c '. .githooks/lib/githooks.sh; githooks_check_drift')
+          }
+
+          install_copies() {
+            cp -r .githooks/. "$scratch/.git/hooks/"
+            chmod +x "$scratch/.git/hooks/pre-commit" "$scratch/.git/hooks/record-tests-pass"
+          }
+
+          mkdir -p "$scratch/.git/hooks"
+          install_copies
+          [ -z "$(drift)" ]
+
+          # An edited installed hook is drift...
+          printf '\n# local edit\n' >> "$scratch/.git/hooks/pre-commit"
+          case "$(drift)" in
+            *"drift: .git/hooks/pre-commit differs from .githooks/pre-commit"*) ;;
+            *) echo "edited installed hook was not reported as drift" >&2; exit 1 ;;
+          esac
+
+          # ...and so is a missing or non-executable copy.
+          rm -f "$scratch/.git/hooks/lib/githooks.sh"
+          case "$(drift)" in
+            *"drift: .githooks/lib/githooks.sh is not installed"*) ;;
+            *) echo "missing installed lib was not reported as drift" >&2; exit 1 ;;
+          esac
+          chmod -x "$scratch/.git/hooks/record-tests-pass"
+          case "$(drift)" in
+            *"drift: .git/hooks/record-tests-pass is not executable"*) ;;
+            *) echo "non-executable installed hook was not reported as drift" >&2; exit 1 ;;
+          esac
+
+          # A leftover file this repo no longer ships is reported too, but
+          # unrelated user hooks are not our business.
+          printf '#!/bin/sh\n' > "$scratch/.git/hooks/lib/removed-helper.sh"
+          printf '#!/bin/sh\n' > "$scratch/.git/hooks/commit-msg"
+          case "$(drift)" in
+            *"drift: .git/hooks/lib/removed-helper.sh is installed"*) ;;
+            *) echo "leftover installed file was not reported as drift" >&2; exit 1 ;;
+          esac
+          case "$(drift)" in
+            *commit-msg*) echo "unrelated user hook was reported as drift" >&2; exit 1 ;;
+            *) ;;
+          esac
+
+          # Re-installing clears every warning.
+          rm -f "$scratch/.git/hooks/lib/removed-helper.sh"
+          install_copies
+          [ -z "$(drift)" ]
+
+          # core.hooksPath = .githooks runs the sources in place: nothing can
+          # drift, so nothing is reported.
+          git -C "$scratch" config core.hooksPath .githooks
+          [ -z "$(drift)" ]
+          git -C "$scratch" config --unset core.hooksPath
+          [ -z "$(drift)" ]
+
           echo "git hook state logic: ok"

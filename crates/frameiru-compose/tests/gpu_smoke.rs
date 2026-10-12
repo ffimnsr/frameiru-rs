@@ -96,7 +96,7 @@ fn composites_on_available_adapter() {
     // must be excluded from the kernel so the bright side cannot smear
     // into the dark background (halo-free, U9.5).
     let mut src3 = frame(res(32, 24), 255);
-    for row in src3.data.chunks_exact_mut(32 * 3) {
+    for row in src3.data.as_chunks_mut::<{ 32 * 3 }>().0 {
         for v in row[32 / 2 * 3..].iter_mut() {
             *v = 0;
         }
@@ -241,7 +241,7 @@ fn composites_on_available_adapter() {
     // Grayscale: all channels equal.
     gpu.update_overlay(OverlayMode::Grayscale);
     let mut src_g = frame(res(16, 16), 0);
-    for px in src_g.data.chunks_exact_mut(3) {
+    for px in src_g.data.as_chunks_mut::<3>().0 {
         px.copy_from_slice(&[200, 100, 50]);
     }
     let m_g = mask(res(16, 16), 0.0);

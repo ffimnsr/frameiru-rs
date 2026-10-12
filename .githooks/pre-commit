@@ -19,6 +19,9 @@ say() {
 }
 
 main() {
+    say 'checking installed hooks are current'
+    githooks_check_drift
+
     say 'checking format'
     cargo fmt --all --check
 

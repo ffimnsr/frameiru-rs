@@ -384,6 +384,9 @@ cargo clippy --workspace --all-targets --all-features
 
 CI runs the same gates (fmt, clippy, docs, build, tests on x86_64 and aarch64, installer
 shellcheck) on every push and pull request; see [.github/workflows/ci.yml](.github/workflows/ci.yml).
+The gates run with whatever `cargo` is on `PATH`, while CI installs unpinned Rust stable, so
+run `rustup update` before pushing: a new clippy release can add lints that older local
+toolchains simply do not have, and those only fail in CI otherwise.
 
 ### Git hooks
 
@@ -402,6 +405,14 @@ files skip the test run. The `--all-features` matrix is not used here: with
 lives in `target/.githooks-state` (gitignored) and is keyed on file contents, so staging
 vs. committing never matters and README/docs edits do not invalidate it. Running `mk ci`
 outside git also records the pass, so the hook will not re-run the suite.
+
+`install-githooks` copies the files into `.git/hooks`, so the installed hook is a
+snapshot: after a pull, or after any edit under `.githooks/`, it keeps running the old
+code until the task is re-run. The hook and `mk ci` therefore compare the installed
+copies against `.githooks/` and warn (without blocking) when they differ, naming the
+files that drifted and the command that fixes it. Set `core.hooksPath` to `.githooks`
+to run the sources in place instead; the drift check recognizes that setup and stays
+quiet.
 
 ## Troubleshooting
 
