@@ -9,12 +9,19 @@ tasks:
     description: Sample greet command
 
   install-local:
-    description: Build release CLI (full features) and GUI, install both to ~/.local/bin
+    description: Build every release binary (CLI with full features, GUI, webcam utils, loopback helper) and install them to ~/.local/bin
     commands:
       - cargo build --release -p frameiru-cli --features full
       - cargo build --release -p frameiru-ui
+      - cargo build --release -p frameiru-webcam-utils
+      - cargo build --release -p frameiru-loopback-helper
       - install -Dm755 target/release/frameiru-cli "$HOME/.local/bin/frameiru-cli"
       - install -Dm755 target/release/frameiru-ui "$HOME/.local/bin/frameiru-ui"
+      - install -Dm755 target/release/frameiru-webcam-utils "$HOME/.local/bin/frameiru-webcam-utils"
+      # The GUI looks for the helper next to itself (or under /usr/libexec), so
+      # ~/.local/bin keeps the banner's LOAD button working without a root
+      # install; /usr/libexec + the polkit policy stay the system path.
+      - install -Dm755 target/release/frameiru-loopback-helper "$HOME/.local/bin/frameiru-loopback-helper"
 
   flatpak-build:
     description: Build and install the Flatpak (com.vastorigins.frameiru) for the current user
