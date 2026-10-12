@@ -171,7 +171,7 @@ impl Compositor for CpuCompositor {
 /// Applies the full-frame overlay pass on top of the finished composite.
 /// All effects are per-pixel multipliers/additions; the animation phase is
 /// driven by the source frame's timestamp so it runs even when the scene is
-/// static.
+/// static. The extended effects live in [`crate::overlay`].
 fn apply_overlay(out: &mut [u8], w: usize, h: usize, mode: OverlayMode, timestamp_us: u64) {
     let t = (timestamp_us % (3600 * 1_000_000)) as f64 / 1_000_000.0;
     match mode {
@@ -238,6 +238,15 @@ fn apply_overlay(out: &mut [u8], w: usize, h: usize, mode: OverlayMode, timestam
                     row[i + 2] = (row[i + 2] as f32 * k * rgb_triad.2).min(255.0) as u8;
                 }
             });
+        }
+        // Extended effects (chromatic aberration, VHS, dither, halftone,
+        // grayscale) are implemented in `crate::overlay`.
+        OverlayMode::ChromaticAberration
+        | OverlayMode::Vhs
+        | OverlayMode::Dither
+        | OverlayMode::Halftone
+        | OverlayMode::Grayscale => {
+            crate::overlay::apply(out, w, h, mode, t);
         }
     }
 }

@@ -3,6 +3,7 @@
 mod app;
 mod devices;
 mod gen;
+mod kwin_watch;
 mod mini_preview;
 mod virtual_camera;
 mod webcam;

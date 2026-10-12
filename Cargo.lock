@@ -1852,11 +1852,13 @@ dependencies = [
  "frameiru-segment",
  "frameiru-sink",
  "frameiru-webcam-utils",
+ "raw-window-handle",
  "rfd",
  "slint",
  "slint-build",
  "tokio",
  "x11rb",
+ "zbus",
 ]
 
 [[package]]
@@ -5366,6 +5368,7 @@ dependencies = [
  "num-traits",
  "once_cell",
  "pin-weak",
+ "raw-window-handle",
  "slint-macros",
  "unicode-segmentation",
  "vtable",
@@ -5909,6 +5912,7 @@ dependencies = [
  "signal-hook-registry",
  "socket2",
  "tokio-macros",
+ "tracing",
  "windows-sys 0.61.2",
 ]
 
@@ -7513,6 +7517,7 @@ dependencies = [
  "rustix 1.1.5",
  "serde",
  "serde_repr",
+ "tokio",
  "tracing",
  "uds_windows",
  "uuid",

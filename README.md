@@ -255,7 +255,7 @@ The Slint app (default features: `gpu`, `v4l2`, `onnx`) detects cameras, starts/
 pipeline, shows a live preview, and provides runtime controls:
 
 - Background modes: passthrough, blur, color, and image picker.
-- Full-frame overlay effects: scanlines, light leak, and CRT.
+- Full-frame overlay effects: scanlines, light leak, CRT, chromatic aberration (RGB split), VHS tracking, ordered dithering, halftone, and grayscale.
 - Webcam controls (brightness, contrast, and vendor controls for supported devices).
 
 Without a loopback device the GUI falls back to headless preview; without `--model` it

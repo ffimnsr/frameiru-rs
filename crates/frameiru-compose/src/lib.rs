@@ -6,6 +6,7 @@
 
 pub mod cpu;
 pub mod mode;
+pub(crate) mod overlay;
 pub mod video;
 
 #[cfg(feature = "gpu")]

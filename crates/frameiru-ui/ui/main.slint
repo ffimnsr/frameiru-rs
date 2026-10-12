@@ -954,7 +954,7 @@ export component MainWindow inherits Window {
                         }
                     }
 
-                    // Row 4: Overlay Effects
+                    // Row 4: Overlay Effects (two button rows to fit the deck)
                     HorizontalLayout {
                         spacing: 12px;
 
@@ -967,43 +967,102 @@ export component MainWindow inherits Window {
                             vertical-alignment: center;
                         }
 
-                        CyberButton {
-                            text: "None";
-                            active: root.overlay_effect == "none";
-                            clicked => {
-                                root.overlay_effect = "none";
-                                root.set_overlay("none");
+                        VerticalLayout {
+                            spacing: 8px;
+
+                            HorizontalLayout {
+                                spacing: 12px;
+
+                                CyberButton {
+                                    text: "None";
+                                    active: root.overlay_effect == "none";
+                                    clicked => {
+                                        root.overlay_effect = "none";
+                                        root.set_overlay("none");
+                                    }
+                                }
+
+                                CyberButton {
+                                    text: "Scanlines";
+                                    active: root.overlay_effect == "scanlines";
+                                    clicked => {
+                                        root.overlay_effect = "scanlines";
+                                        root.set_overlay("scanlines");
+                                    }
+                                }
+
+                                CyberButton {
+                                    text: "Light Leak";
+                                    active: root.overlay_effect == "light_leak";
+                                    clicked => {
+                                        root.overlay_effect = "light_leak";
+                                        root.set_overlay("light_leak");
+                                    }
+                                }
+
+                                CyberButton {
+                                    text: "CRT";
+                                    active: root.overlay_effect == "crt";
+                                    clicked => {
+                                        root.overlay_effect = "crt";
+                                        root.set_overlay("crt");
+                                    }
+                                }
+
+                                CyberButton {
+                                    text: "RGB Split";
+                                    active: root.overlay_effect == "chromatic";
+                                    clicked => {
+                                        root.overlay_effect = "chromatic";
+                                        root.set_overlay("chromatic");
+                                    }
+                                }
+
+                                Rectangle { horizontal-stretch: 1; background: transparent; }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 12px;
+
+                                CyberButton {
+                                    text: "VHS";
+                                    active: root.overlay_effect == "vhs";
+                                    clicked => {
+                                        root.overlay_effect = "vhs";
+                                        root.set_overlay("vhs");
+                                    }
+                                }
+
+                                CyberButton {
+                                    text: "Grayscale";
+                                    active: root.overlay_effect == "grayscale";
+                                    clicked => {
+                                        root.overlay_effect = "grayscale";
+                                        root.set_overlay("grayscale");
+                                    }
+                                }
+
+                                CyberButton {
+                                    text: "Dither";
+                                    active: root.overlay_effect == "dither";
+                                    clicked => {
+                                        root.overlay_effect = "dither";
+                                        root.set_overlay("dither");
+                                    }
+                                }
+
+                                CyberButton {
+                                    text: "Halftone";
+                                    active: root.overlay_effect == "halftone";
+                                    clicked => {
+                                        root.overlay_effect = "halftone";
+                                        root.set_overlay("halftone");
+                                    }
+                                }
+
+                                Rectangle { horizontal-stretch: 1; background: transparent; }
                             }
                         }
-
-                        CyberButton {
-                            text: "Scanlines";
-                            active: root.overlay_effect == "scanlines";
-                            clicked => {
-                                root.overlay_effect = "scanlines";
-                                root.set_overlay("scanlines");
-                            }
-                        }
-
-                        CyberButton {
-                            text: "Light Leak";
-                            active: root.overlay_effect == "light_leak";
-                            clicked => {
-                                root.overlay_effect = "light_leak";
-                                root.set_overlay("light_leak");
-                            }
-                        }
-
-                        CyberButton {
-                            text: "CRT";
-                            active: root.overlay_effect == "crt";
-                            clicked => {
-                                root.overlay_effect = "crt";
-                                root.set_overlay("crt");
-                            }
-                        }
-
-                        Rectangle { horizontal-stretch: 1; background: transparent; }
                     }
 
                     // Row 5: Status Telemetry Footer

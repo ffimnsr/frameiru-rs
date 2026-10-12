@@ -32,4 +32,16 @@ pub enum OverlayMode {
     LightLeak,
     /// CRT look: stronger scanlines, vignette, and a rolling brightness flicker.
     Crt,
+    /// Radial RGB split: red is pushed outward, blue inward (cheap lens look).
+    ChromaticAberration,
+    /// Worn magnetic tape: per-band horizontal jitter, chroma smear, and a
+    /// rolling tracking bar.
+    Vhs,
+    /// 1-bit ordered dithering with a 4x4 Bayer matrix (classic Macintosh).
+    Dither,
+    /// Halftone dot screen: rotated lattice whose dot radius tracks local
+    /// luminance (comic print look).
+    Halftone,
+    /// Luma-weighted grayscale conversion.
+    Grayscale,
 }

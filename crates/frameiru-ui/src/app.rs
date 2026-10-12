@@ -871,6 +871,11 @@ fn parse_overlay(name: &str) -> Option<OverlayMode> {
         "scanlines" => Some(OverlayMode::Scanlines),
         "light_leak" => Some(OverlayMode::LightLeak),
         "crt" => Some(OverlayMode::Crt),
+        "chromatic" => Some(OverlayMode::ChromaticAberration),
+        "vhs" => Some(OverlayMode::Vhs),
+        "dither" => Some(OverlayMode::Dither),
+        "halftone" => Some(OverlayMode::Halftone),
+        "grayscale" => Some(OverlayMode::Grayscale),
         _ => None,
     }
 }
@@ -885,6 +890,14 @@ mod tests {
         assert_eq!(parse_overlay("scanlines"), Some(OverlayMode::Scanlines));
         assert_eq!(parse_overlay("light_leak"), Some(OverlayMode::LightLeak));
         assert_eq!(parse_overlay("crt"), Some(OverlayMode::Crt));
+        assert_eq!(
+            parse_overlay("chromatic"),
+            Some(OverlayMode::ChromaticAberration)
+        );
+        assert_eq!(parse_overlay("vhs"), Some(OverlayMode::Vhs));
+        assert_eq!(parse_overlay("dither"), Some(OverlayMode::Dither));
+        assert_eq!(parse_overlay("halftone"), Some(OverlayMode::Halftone));
+        assert_eq!(parse_overlay("grayscale"), Some(OverlayMode::Grayscale));
         assert_eq!(parse_overlay("banana"), None);
         assert_eq!(parse_overlay(""), None);
     }

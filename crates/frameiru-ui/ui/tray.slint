@@ -17,7 +17,12 @@ export component FrameiruTray inherits SystemTrayIcon {
             activated => { root.show_window(); }
         }
         MenuItem {
-            title: "Mini preview when minimized";
+            // ksni (Linux SNI tray) cannot render checkmarks, so the state is
+            // reflected in the title; checkable/checked still drive native
+            // checkmarks on macOS/Windows via muda.
+            title: root.mini_preview_checked
+                ? "✓ Mini preview when minimized"
+                : "Mini preview when minimized";
             checkable: true;
             checked: root.mini_preview_checked;
             activated => { root.toggle_mini_preview(); }

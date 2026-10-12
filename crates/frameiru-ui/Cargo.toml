@@ -26,9 +26,13 @@ frameiru-sink = { workspace = true }
 frameiru-webcam-utils = { workspace = true }
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
-slint = { version = "1", features = ["backend-winit", "renderer-femtovg"] }
+slint = { version = "1", features = ["backend-winit", "renderer-femtovg", "raw-window-handle-06"] }
+# Native window handle (xcb/xlib id) for EWMH minimize polling.
+raw-window-handle = "0.6"
 rfd = "0.15"
 tokio.workspace = true
+# KDE Plasma minimize detection (KWin scripting over the session bus).
+zbus = { version = "5", default-features = false, features = ["tokio"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # PiP work-area geometry (EWMH _NET_WORKAREA); already in the tree via winit.
