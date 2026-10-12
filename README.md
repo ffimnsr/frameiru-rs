@@ -22,15 +22,17 @@ Teams, Discord, `ffplay`, or anything else can select as a regular webcam.
 - [How it works](#how-it-works)
 - [Requirements](#requirements)
 - [Quick start](#quick-start)
+- [Virtual camera setup](#virtual-camera-setup)
 - [Backgrounds](#backgrounds)
 - [CLI reference](#cli-reference)
+- [Tuning](#tuning)
 - [Desktop GUI](#desktop-gui)
 - [Library use](#library-use)
 - [Workspace layout](#workspace-layout)
 - [Feature flags](#feature-flags)
-- [Tuning](#tuning)
 - [Testing](#testing)
 - [Troubleshooting](#troubleshooting)
+  - [Secure Boot ("Key was rejected by service")](#secure-boot-key-was-rejected-by-service)
 - [Related tools](#related-tools)
 - [Documentation](#documentation)
 - [License](#license)
@@ -81,40 +83,15 @@ cargo build --release -p frameiru-cli --features full
 ### 2. Load v4l2loopback
 
 ```sh
-sudo modprobe v4l2loopback exclusive_caps=1 card_label="Frameiru"
+sudo modprobe v4l2loopback exclusive_caps=1 card_label="Frameiru" video_nr=10
 ```
 
 `exclusive_caps=1` makes the device show up as a camera (not a capture device) for
 consumers; start the pipeline before opening the camera in the consuming app.
 
-**Do it once, forever** — make the module auto-load at every boot instead of
-loading it per session:
-
-```sh
-sudo frameiru-cli setup
-# later, to undo: sudo frameiru-cli setup --remove
-```
-
-This writes `/etc/modprobe.d/frameiru.conf` (the `exclusive_caps`/`card_label`/`video_nr`
-options) and `/etc/modules-load.d/frameiru.conf` (the module name), checks for conflicting
-`v4l2loopback` configs, and tells you whether the current session already has the right
-module state.
-
-**Or let the GUI do this session's load.** `frameiru-ui` probes the loopback sink on
-startup and shows its real state in a banner (module missing, busy, permission denied,
-non-exclusive mode, or ready on `/dev/videoN`). With the polkit helper installed, the
-banner's **LOAD VIRTUAL CAMERA** button runs the module load through `pkexec` — no
-terminal, no `sudo` typing. See [`packaging/README.md`](packaging/README.md) for the
-(one-time) install, or run `frameiru-loopback-helper loopback-load` under `sudo` yourself.
-
-The GUI also **heals itself**: while the engine runs on a mock sink it watches for the
-loopback device (1s poll) and hot-attaches it the moment it appears — load the module
-while it runs, or close the app that held the device, and the pill flips to the live
-`/dev/videoN` without a restart.
-
-**Not sure what's wrong?** `frameiru-cli doctor` preflights the whole stack (module,
-`exclusive_caps`, loopback node, `video` group, ffmpeg, boot config) and prints an exact
-fix per failure; `--fix` attempts the privileged module step through `pkexec`.
+This load lasts only until reboot. [Virtual camera setup](#virtual-camera-setup) covers
+persisting it across boots, loading it from the GUI, and the `frameiru-cli doctor`
+preflight.
 
 ### 3. Run the pipeline
 
@@ -147,6 +124,41 @@ No camera or kernel module at hand? Smoke-test the whole engine hermetically:
 frameiru-cli run --mock --null-sink --background blur:8
 frameiru-cli benchmark --frames 300
 ```
+
+## Virtual camera setup
+
+Frameiru publishes to a `v4l2loopback` device, so the module must be loaded (and the
+device must exist) before the pipeline starts. A manual `modprobe` lasts until reboot —
+these options keep the virtual camera available.
+
+**Do it once, forever** — make the module auto-load at every boot instead of loading it
+per session:
+
+```sh
+sudo frameiru-cli setup
+# later, to undo: sudo frameiru-cli setup --remove
+```
+
+This writes `/etc/modprobe.d/frameiru.conf` (the `exclusive_caps`/`card_label`/`video_nr`
+options) and `/etc/modules-load.d/frameiru.conf` (the module name), checks for conflicting
+`v4l2loopback` configs, and tells you whether the current session already has the right
+module state.
+
+**Or let the GUI do this session's load.** `frameiru-ui` probes the loopback sink on
+startup and shows its real state in a banner (module missing, busy, permission denied,
+non-exclusive mode, or ready on `/dev/videoN`). With the polkit helper installed, the
+banner's **LOAD VIRTUAL CAMERA** button runs the module load through `pkexec` — no
+terminal, no `sudo` typing. See [`packaging/README.md`](packaging/README.md) for the
+(one-time) install, or run `frameiru-loopback-helper loopback-load` under `sudo` yourself.
+
+The GUI also **heals itself**: while the engine runs on a mock sink it watches for the
+loopback device (1s poll) and hot-attaches it the moment it appears — load the module
+while it runs, or close the app that held the device, and the pill flips to the live
+`/dev/videoN` without a restart.
+
+**Not sure what's wrong?** `frameiru-cli doctor` preflights the whole stack (module,
+`exclusive_caps`, loopback node, `video` group, ffmpeg, boot config) and prints an exact
+fix per failure; `--fix` attempts the privileged module step through `pkexec`.
 
 ## Backgrounds
 
@@ -212,6 +224,26 @@ The wire protocol is newline-delimited JSON with three requests — `set_backgro
 `start` forwards the core flags (`--device`, `--output`, `--width`, `--height`,
 `--background`, `--max-fps`, `--socket`, `--mock`, `--null-sink`, `--model`); use `run` in
 the foreground for the full tuning set.
+
+## Tuning
+
+- **Inference dominates cost.** `--infer-fps 30` plus motion gating already skips static
+  scenes; lower `--infer-fps` further on constrained CPUs.
+- **Threads**: ORT defaults to the physical core count (logical cores rarely help latency
+  and heat the CPU). Use `--threads 2..4` on constrained machines.
+- **Mask quality**: guided-filter refinement (`--no-refine-mask` disables, ~2–3 ms at
+  640x480), `--mask-contrast` to collapse ghosting mid-alphas, `--mask-dilate` to grow
+  the subject slightly and stop background leaking at the matte edge.
+- **`--mask-alpha` is off by default** for instant motion tracking; enable it to trade
+  trailing blur for temporal stability on low inference rates.
+- **`--roi-zoom` is off by default** — cropping to a tracking box adds delay and clips at
+  boundaries during rapid movement.
+- **`--subject-light`** lifts the foreground toward white so the subject looks lit without
+  touching the background.
+
+The research notes behind these choices are in
+[docs/research/Real-Time Background Blur Optimization.md](docs/research/Real-Time%20Background%20Blur%20Optimization.md)
+and [PLAN.md](PLAN.md) (section 9).
 
 ## Desktop GUI
 
@@ -290,26 +322,6 @@ need per crate, or use `frameiru-cli --features full`.
 | `frameiru-core`                  | `serde`  | Serialization for the IPC protocol.                                    |
 | `frameiru-ui`                    | —        | Defaults to `gpu`, `v4l2`, `onnx`.                                     |
 
-## Tuning
-
-- **Inference dominates cost.** `--infer-fps 30` plus motion gating already skips static
-  scenes; lower `--infer-fps` further on constrained CPUs.
-- **Threads**: ORT defaults to the physical core count (logical cores rarely help latency
-  and heat the CPU). Use `--threads 2..4` on constrained machines.
-- **Mask quality**: guided-filter refinement (`--no-refine-mask` disables, ~2–3 ms at
-  640x480), `--mask-contrast` to collapse ghosting mid-alphas, `--mask-dilate` to grow
-  the subject slightly and stop background leaking at the matte edge.
-- **`--mask-alpha` is off by default** for instant motion tracking; enable it to trade
-  trailing blur for temporal stability on low inference rates.
-- **`--roi-zoom` is off by default** — cropping to a tracking box adds delay and clips at
-  boundaries during rapid movement.
-- **`--subject-light`** lifts the foreground toward white so the subject looks lit without
-  touching the background.
-
-The research notes behind these choices are in
-[docs/research/Real-Time Background Blur Optimization.md](docs/research/Real-Time%20Background%20Blur%20Optimization.md)
-and [PLAN.md](PLAN.md) (section 9).
-
 ## Testing
 
 ```sh
@@ -337,11 +349,11 @@ cargo clippy --workspace --all-targets --all-features
 
 ## Troubleshooting
 
-- **`/dev/video10` does not exist** — the GUI banner says so and offers a LOAD button
-  (with the polkit helper) or a copyable command; `sudo frameiru-cli setup` makes the
-  module auto-load at every boot (`--remove` undoes it). Manually:
-  `sudo modprobe v4l2loopback exclusive_caps=1 card_label="Frameiru"`. Confirm with
-  `v4l2-ctl --list-devices`.
+- **`/dev/video10` does not exist** — `sudo frameiru-cli doctor` prints the exact cause
+  and fix; see [Virtual camera setup](#virtual-camera-setup) for the load options.
+  Confirm loaded devices with `v4l2-ctl --list-devices`.
+- **`modprobe` fails with `Key was rejected by service`** — Secure Boot rejected the
+  module's signing key; see [Secure Boot](#secure-boot-key-was-rejected-by-service).
 - **Sink banner says BUSY** — another producer (OBS, a second Frameiru) holds
   `/dev/videoN`; close it and hit the banner's RETRY.
 - **Sink banner says DENIED** — add your user to the `video` group and re-login.
@@ -356,6 +368,71 @@ cargo clippy --workspace --all-targets --all-features
   `PATH`.
 - **GPU compositor unavailable** — wgpu init failures (headless session, driver issues)
   log a warning and fall back to the CPU compositor; this is expected and correct.
+
+### Secure Boot ("Key was rejected by service")
+
+`modprobe v4l2loopback` fails with:
+
+```text
+modprobe: ERROR: could not insert 'v4l2loopback': Key was rejected by service
+```
+
+The module is signed, but with a key the kernel does not trust. When Secure Boot is
+enabled, the kernel only loads modules whose signing key is enrolled in the MOK (Machine
+Owner Key) trust chain. This commonly appears after a kernel update (or a first install):
+`akmods` (Fedora) or DKMS (Debian/Ubuntu) rebuilt `v4l2loopback` and signed it with an
+auto-generated local key that was never enrolled.
+
+Diagnose the mismatch:
+
+```sh
+mokutil --sb-state                            # is Secure Boot enabled?
+modinfo v4l2loopback | grep -iE 'sig|signer'  # which key signed the module?
+mokutil --list-enrolled                       # which keys does the kernel trust?
+```
+
+If the module's `signer` is missing from `--list-enrolled`, enroll that signing key.
+
+On Fedora (`akmods`), the signing key pair lives in `/etc/pki/akmods`:
+
+```sh
+sudo openssl x509 -inform DER -in /etc/pki/akmods/certs/public_key.der -noout -subject
+# must match the module's `signer` field
+sudo mokutil --test-key /etc/pki/akmods/certs/public_key.der   # expect "not enrolled"
+sudo mokutil --import /etc/pki/akmods/certs/public_key.der     # set a one-time password
+```
+
+On Debian/Ubuntu (DKMS):
+
+```sh
+sudo update-secureboot-policy --enroll-key
+# or rebuild the module, which prompts for MOK enrollment:
+sudo dpkg-reconfigure v4l2loopback-dkms
+```
+
+Then **reboot**. A blue MOK Manager screen appears at boot: `Enroll MOK` → `View key` to
+verify → `Continue` → `Yes` → enter the one-time password → reboot again. Finally:
+
+```sh
+sudo modprobe v4l2loopback exclusive_caps=1 card_label="Frameiru" video_nr=10
+```
+
+`mokutil --test-key` reports "already enrolled" once the key is trusted. If loading still
+fails after enrollment, inspect the kernel log:
+
+```sh
+sudo dmesg | grep -iE 'v4l2loopback|rejected|verif'
+```
+
+Caveats:
+
+- Enrolling a key lets it sign **any** kernel module for this machine — keep the private
+  key (`/etc/pki/akmods/private/private_key.priv` on Fedora) and the MOK password safe.
+- If a later kernel update breaks loading again, the signing key was regenerated; repeat
+  the enrollment with the new certificate.
+- Disabling Secure Boot in the firmware also unblocks loading, but removes the protection
+  for every module and bootloader on the machine — enrolling the key is the recommended
+  route.
 
 ## Related tools
 

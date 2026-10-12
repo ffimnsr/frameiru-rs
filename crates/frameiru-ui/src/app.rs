@@ -21,14 +21,15 @@ use frameiru_webcam_utils::controls::ControlInfo;
 use slint::{CloseRequestResponse, ComponentHandle, SharedString, VecModel};
 
 use crate::devices::{detect_devices, DeviceEntry};
+// Re-exported so `main.rs` can construct the window.
+pub(crate) use crate::gen::{FrameiruTray, MainWindow, MiniPreview};
+use crate::mini_preview::MiniPreviewController;
 use crate::virtual_camera::{self, SinkState};
 use crate::webcam;
 
-// Generated per-.slint-file modules. `slint::include_modules!()` can't be used: it
-// expands to the single file named by `SLINT_INCLUDE_GENERATED`, which the last
-// `slint_build::compile` call overwrites, so pull both outputs in manually.
-include!(concat!(env!("OUT_DIR"), "/main.rs"));
-include!(concat!(env!("OUT_DIR"), "/tray.rs"));
+// Generated per-.slint-file modules are pulled in via `gen` (one module per
+// compiled file, because `slint::include_modules!()` can only expand to a
+// single generated file).
 
 const PREVIEW_WIDTH: u32 = 640;
 const PREVIEW_HEIGHT: u32 = 480;
@@ -55,6 +56,8 @@ pub struct App {
     sink_watcher: Option<virtual_camera::SinkWatcher>,
     /// System tray icon; holding it keeps the app alive when the window is hidden.
     tray: FrameiruTray,
+    /// Picture-in-picture mini preview, shown when the window is minimized.
+    mini: MiniPreviewController,
 }
 
 impl App {
@@ -108,6 +111,10 @@ impl App {
         let sink_state = SinkState::probe();
         virtual_camera::apply(&window, &virtual_camera::view_for(&sink_state, ""));
 
+        // PiP controller borrows a weak window handle before the window is
+        // moved into the struct below.
+        let mini = MiniPreviewController::new(window.as_weak())?;
+
         Ok(Self {
             window,
             engine: None,
@@ -120,6 +127,7 @@ impl App {
             sink_action_busy: false,
             sink_watcher: None,
             tray: FrameiruTray::new()?,
+            mini,
         })
     }
 
@@ -163,6 +171,16 @@ impl App {
                 engine.shutdown();
             }
             let _ = slint::quit_event_loop();
+        });
+
+        // Tray "Mini preview when minimized": flip the checked state (the
+        // platform checkbox mirrors whatever muda does) and toggle the PiP.
+        let a = app.clone();
+        app.borrow().tray.on_toggle_mini_preview(move || {
+            let app = a.borrow();
+            let next = !app.tray.get_mini_preview_checked();
+            app.tray.set_mini_preview_checked(next);
+            app.mini.set_enabled(next);
         });
     }
 
@@ -554,7 +572,7 @@ impl App {
                     let state = Self::applied_sink_state(&app);
                     app.sink_state = state.clone();
                     virtual_camera::apply(&app.window, &virtual_camera::view_for(&state, ""));
-                    Self::pump_preview(app.window.as_weak(), rx, handle);
+                    Self::pump_preview(app.window.as_weak(), app.mini.weak(), rx, handle);
                     app.engine = Some(engine);
                     // Watch for a loopback device only when publishing to
                     // nothing yet (mock sink) — a real sink is already live.
@@ -645,6 +663,7 @@ impl App {
     /// on the UI thread and posts them cleanly.
     fn pump_preview(
         window: slint::Weak<MainWindow>,
+        mini: slint::Weak<MiniPreview>,
         mut rx: tokio::sync::broadcast::Receiver<Arc<FrameBuffer>>,
         handle: frameiru_pipeline::PipelineHandle,
     ) {
@@ -675,13 +694,19 @@ impl App {
 
                         is_rendering.store(true, Ordering::Release);
                         let weak = window.clone();
+                        let mini = mini.clone();
                         let is_rendering_flag = Arc::clone(&is_rendering);
                         let invoke_res = slint::invoke_from_event_loop(move || {
                             if let Some(win) = weak.upgrade() {
                                 if let Some(image) =
                                     frameiru_core::slint_compat::frame_to_slint_image(&frame)
                                 {
-                                    win.set_preview(image);
+                                    win.set_preview(image.clone());
+                                    // Same shared pixel buffer, zero extra
+                                    // copies; PiP window re-renders it.
+                                    if let Some(mini) = mini.upgrade() {
+                                        mini.set_preview(image);
+                                    }
                                 }
                                 if let Some((fps, lat, sink_err)) = telemetry {
                                     win.set_fps_text(fps.into());

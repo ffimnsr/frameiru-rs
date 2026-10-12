@@ -30,5 +30,9 @@ slint = { version = "1", features = ["backend-winit", "renderer-femtovg"] }
 rfd = "0.15"
 tokio.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# PiP work-area geometry (EWMH _NET_WORKAREA); already in the tree via winit.
+x11rb = "0.13"
+
 [build-dependencies]
 slint-build = "1"

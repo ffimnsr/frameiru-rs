@@ -2,12 +2,15 @@
 
 mod app;
 mod devices;
+mod gen;
+mod mini_preview;
 mod virtual_camera;
 mod webcam;
 
 use std::path::PathBuf;
 
-use app::{App, MainWindow};
+use app::App;
+use app::MainWindow;
 use clap::Parser;
 use frameiru_core::format::Resolution;
 

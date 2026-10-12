@@ -5,6 +5,10 @@ export component FrameiruTray inherits SystemTrayIcon {
     tooltip: "Frameiru";
     title: "Frameiru";
 
+    // Truth source for the PiP toggle; the app flips it and the platform
+    // menu is rebuilt on change.
+    in-out property <bool> mini_preview_checked: false;
+
     clicked => { root.show_window(); }
 
     Menu {
@@ -13,11 +17,18 @@ export component FrameiruTray inherits SystemTrayIcon {
             activated => { root.show_window(); }
         }
         MenuItem {
+            title: "Mini preview when minimized";
+            checkable: true;
+            checked: root.mini_preview_checked;
+            activated => { root.toggle_mini_preview(); }
+        }
+        MenuItem {
             title: "Quit";
             activated => { root.quit(); }
         }
     }
 
     callback show_window();
+    callback toggle_mini_preview();
     callback quit();
 }
